@@ -13,6 +13,7 @@
 #include "../entities/player.h"
 
 #include "../world/world.h"
+#include <logic_system.h>
 
 
 class App {
@@ -25,9 +26,8 @@ public:
     void set_up_opengl();
     void make_systems();
 
-    unsigned int shader3D;
-    unsigned int shaderText;
-    unsigned int shader2D;
+    static unsigned int shaders[4];
+
     static float fov;
 
     static size_t fpsCounter;
@@ -46,6 +46,7 @@ public:
     CameraSystem* cameraSystem;
     RenderSystem* renderSystem;
     MeshSystem* meshSystem;
+    LogicSystem* logicSystem;
 
     World* world;
 

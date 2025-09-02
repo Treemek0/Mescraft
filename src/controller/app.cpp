@@ -5,15 +5,17 @@ size_t App::fps = 0;
 size_t App::fpsCounter = 0;
 unsigned int App::cameraID = 0;
 
+unsigned int App::shaders[4];
+
 App::App() {
     set_up_glfw();
 }
 
 App::~App() {
     glDeleteTextures(renderSystem->textures.size(), renderSystem->textures.data());
-    glDeleteProgram(shader3D);
-    glDeleteProgram(shaderText);
-    glDeleteProgram(shader2D);
+    for (int shader : shaders){
+        glDeleteShader(shader);
+    }
 
     renderSystem->saveWorld();
 
@@ -123,7 +125,7 @@ void App::run() {
         motionSystem->update(transformComponents, physicsComponents, dt);
         cameraSystem->update(transformComponents, physicsComponents, cameraID, *cameraComponent, dt);
 
-		renderSystem->update(transformComponents, renderComponents);
+		renderSystem->update(transformComponents, renderComponents, *cameraComponent);
 
         App::fpsCounter++;
         if (currentTime - lastTime >= 1.0) {
@@ -160,14 +162,29 @@ void App::set_up_glfw() {
 void App::window_size_changed_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
 
-    GLint currentShader = 0;
-    glGetIntegerv(GL_CURRENT_PROGRAM, &currentShader);
-
-    unsigned int projLocation = glGetUniformLocation(currentShader, "projection");
+    // WORLD SPACE
     float aspect = static_cast<float>(width) / static_cast<float>(height);
 
+    glUseProgram(shaders[0]); // shader3D
 	glm::mat4 projection = glm::perspective(App::fov, aspect, 0.01f, 1000.0f);
-	glUniformMatrix4fv(projLocation, 1, GL_FALSE, glm::value_ptr(projection));
+	glUniformMatrix4fv(glGetUniformLocation(shaders[0], "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+    // ORTHO
+    {
+        glm::mat4 projOrtho = glm::ortho(0.0f, float(width), float(height), 0.0f);
+
+        glUseProgram(shaders[1]); // shader2D
+        glUniformMatrix4fv(glGetUniformLocation(shaders[1], "projection"), 1, GL_FALSE, glm::value_ptr(projOrtho));
+
+        glUseProgram(shaders[2]); // shaderText
+        glUniformMatrix4fv(glGetUniformLocation(shaders[2], "projection"), 1, GL_FALSE, glm::value_ptr(projOrtho));
+    }
+
+    {
+        glUseProgram(shaders[3]); // shader3D HUD
+        glUniformMatrix4fv(glGetUniformLocation(shaders[3], "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    }
+    glUseProgram(shaders[0]); // restore back
 }
 
 void App::set_up_opengl() {
@@ -184,14 +201,15 @@ void App::set_up_opengl() {
     glCullFace(GL_BACK);
 
     // --- Load shaders ---
-    shader3D = make_shader("./src/shaders/vertex.txt", "./src/shaders/fragment.txt");
-    shader2D = make_shader("./src/shaders/vertex2D.txt", "./src/shaders/fragment2D.txt");
-    shaderText = make_shader("./src/shaders/vertex_text.txt", "./src/shaders/fragment_text.txt");
+    shaders[0] = make_shader("./src/shaders/world_space/vertex.txt", "./src/shaders/world_space/fragment.txt");
+    shaders[1] = make_shader("./src/shaders/hud/2d/vertex2D.txt", "./src/shaders/hud/2d/fragment2D.txt");
+    shaders[2] = make_shader("./src/shaders/hud/text/vertex_text.txt", "./src/shaders/hud/text/fragment_text.txt");
+    shaders[3] = make_shader("./src/shaders/hud/3d/vertex3D.txt", "./src/shaders/hud/3d/fragment3D.txt");
 
     // --- Setup 3D shader ---
-    glUseProgram(shader3D);
-    int proj3DLoc = glGetUniformLocation(shader3D, "projection");
-    int texLoc = glGetUniformLocation(shader3D, "textureSampler");
+    glUseProgram(shaders[0]);
+    int proj3DLoc = glGetUniformLocation(shaders[0], "projection");
+    int texLoc = glGetUniformLocation(shaders[0], "textureSampler");
     glUniform1i(texLoc, 0); // texture unit 0
 
     float aspect = static_cast<float>(w) / static_cast<float>(h);
@@ -199,10 +217,10 @@ void App::set_up_opengl() {
     glUniformMatrix4fv(proj3DLoc, 1, GL_FALSE, glm::value_ptr(proj3D));
 
     // --- Setup Text shader ---
-    glUseProgram(shaderText);
-    int projTextLoc = glGetUniformLocation(shaderText, "projection");
-    int modelTextLoc = glGetUniformLocation(shaderText, "model");
-    int colorTextLoc = glGetUniformLocation(shaderText, "textColor");
+    glUseProgram(shaders[1]);
+    int projTextLoc = glGetUniformLocation(shaders[1], "projection");
+    int modelTextLoc = glGetUniformLocation(shaders[1], "model");
+    int colorTextLoc = glGetUniformLocation(shaders[1], "textColor");
 
     glm::mat4 projText = glm::ortho(0.0f, float(w), float(h), 0.0f); // screen-space ortho
     glm::mat4 modelText = glm::mat4(1.0f); // identity for now
@@ -212,27 +230,39 @@ void App::set_up_opengl() {
     glUniform3f(colorTextLoc, 1.0f, 1.0f, 1.0f); // default text color (white)
 
     // --- Setup 2D shader ---
-    glUseProgram(shader2D);
-    int proj2DLoc = glGetUniformLocation(shader2D, "projection");
-    int color2DLoc = glGetUniformLocation(shader2D, "color");       // optional if shader uses a color
-    int tex2DLoc   = glGetUniformLocation(shader2D, "texture0");    // your texture sampler
-    int useTextureLoc = glGetUniformLocation(shader2D, "useTexture");
+    {
+        glUseProgram(shaders[2]);
+        int proj2DLoc = glGetUniformLocation(shaders[2], "projection");
+        int color2DLoc = glGetUniformLocation(shaders[2], "color");       // optional if shader uses a color
+        int tex2DLoc   = glGetUniformLocation(shaders[2], "texture0");    // your texture sampler
+        int useTextureLoc = glGetUniformLocation(shaders[2], "useTexture");
 
-    glm::mat4 proj2D = glm::ortho(0.0f, float(w), float(h), 0.0f); // screen-space ortho
-    glUniformMatrix4fv(proj2DLoc, 1, GL_FALSE, glm::value_ptr(proj2D));
-    glUniform3f(color2DLoc, 1.0f, 1.0f, 1.0f);                     // default white
-    glUniform1i(tex2DLoc, 0); 
-    glUniform1i(useTextureLoc, 0);  // no texture, just color
+        glm::mat4 proj2D = glm::ortho(0.0f, float(w), float(h), 0.0f); // screen-space ortho
+        glUniformMatrix4fv(proj2DLoc, 1, GL_FALSE, glm::value_ptr(proj2D));
+        glUniform3f(color2DLoc, 1.0f, 1.0f, 1.0f);                     // default white
+        glUniform1i(tex2DLoc, 0); 
+        glUniform1i(useTextureLoc, 0);  // no texture, just color
+    }
+
+    // --- Setup 3D HUD shader ---
+    {
+        glUseProgram(shaders[3]);
+        int proj3DLoc = glGetUniformLocation(shaders[3], "projection");
+        int texLoc = glGetUniformLocation(shaders[3], "textureSampler");
+        glUniform1i(texLoc, 0); // texture unit 0
+
+        glUniformMatrix4fv(proj3DLoc, 1, GL_FALSE, glm::value_ptr(proj3D));
+    }
 }
 
 
 void App::make_systems() {
     world = new World(0);
 
+    logicSystem = new LogicSystem(window, world);
     motionSystem = new MotionSystem();
-    cameraSystem = new CameraSystem(shader3D, window);
-    renderSystem = new RenderSystem(shader3D, shaderText, shader2D, window, world, transformComponents);
+    cameraSystem = new CameraSystem(shaders, window);
+    renderSystem = new RenderSystem(shaders, window, world, transformComponents, logicSystem);
     meshSystem = new MeshSystem();
 
-    
 }

@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <inventory.h>
 
 struct Player {
     glm::vec3 position;
@@ -12,6 +13,8 @@ struct Player {
 
     Player() : health(20.0f), hunger(20.0f) {}
     
+    Inventory inventory;
+
     void update(float deltaTime) {
         const float hungerDecayRate = 0.1f; // units per second
 

@@ -130,6 +130,11 @@ MeshData MeshSystem::createChunkData(const Chunk& chunk, std::unordered_map<uint
                             memcpy(faceV, tmpV, sizeof(faceV));
                         }
 
+                        float light = 1.0f;
+                        if(f < 4) light = 0.8f;
+                        if(f == 5) light = 0.65f;
+
+
                         // Add vertices
                         for (int vert = 0; vert < 4; ++vert) {
                             vertices.push_back(x + faceVerts[f][vert].x);
@@ -137,7 +142,7 @@ MeshData MeshSystem::createChunkData(const Chunk& chunk, std::unordered_map<uint
                             vertices.push_back(z + faceVerts[f][vert].z);
                             vertices.push_back(faceU[vert]);
                             vertices.push_back(faceV[vert]);
-                            vertices.push_back(f);
+                            vertices.push_back(light);
                         }
 
                         // Indices same as before

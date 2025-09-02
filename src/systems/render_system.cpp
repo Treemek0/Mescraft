@@ -13,19 +13,23 @@
 #include <thread>
 #include <../utilities/raycast.h>
 
+#include <glm/gtc/matrix_transform.hpp>
+#include "logic_system.h"
+
 stbtt_bakedchar cdata[96];
 GLuint fontTexture;
 std::vector<unsigned char> fontBuffer;
 int fontHeight = 32;
 
-RenderSystem::RenderSystem(unsigned int shader, unsigned int shaderText, unsigned int shader2D, GLFWwindow* window, World* w, std::unordered_map<unsigned int, TransformComponent> transformComponents) : world(w), runningCreationThread(true) {
-    this->shader = shader;
-    this->shaderText = shaderText;
-    this->shader2D = shader2D;
-    modelLocation = glGetUniformLocation(shader, "model");
+RenderSystem::RenderSystem(unsigned int shaders[], GLFWwindow* window, World* w, std::unordered_map<unsigned int, TransformComponent> transformComponents, LogicSystem* logicSystem) : world(w), runningCreationThread(true) {
+    this->shader = shaders[0];
+    this->shader2D = shaders[1];
+    this->shaderText = shaders[2];
+    this->shader3D_hud = shaders[3];
     blocksTextureID = make_texture("textures/blocks.png");
     hoverTextureID = make_texture("textures/hover.png");
     this->window = window;
+    this->logicSystem = logicSystem;
 
     setUpBuffers();
 
@@ -56,28 +60,9 @@ RenderSystem::RenderSystem(unsigned int shader, unsigned int shaderText, unsigne
     });
 }
     
-void RenderSystem::update(std::unordered_map<unsigned int, TransformComponent> &transformComponents, std::unordered_map<unsigned int, RenderComponent> &renderComponents) {
+void RenderSystem::update(std::unordered_map<unsigned int, TransformComponent> &transformComponents, std::unordered_map<unsigned int, RenderComponent> &renderComponents, CameraComponent& cameraComponent) {
 
-    // if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS) {
-    //     glm::vec3 playerPos = transformComponents[App::cameraID].position;
-        
-    //     int playerChunkX = static_cast<int>(floor(playerPos.x / CHUNK_SIZE));
-    //     int playerChunkY = static_cast<int>(floor(playerPos.y / CHUNK_SIZE));
-    //     int playerChunkZ = static_cast<int>(floor(playerPos.z / CHUNK_SIZE));
-
-    //     auto hash = hashChunkCoords(playerChunkX, playerChunkY, playerChunkZ);
-
-    //     std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
-    //     Chunk& chunk = world->chunkMap.at(hash);
-    //     Mesh& mesh = chunksMesh.at(hash);
-    //     int localX = static_cast<int>(floor(playerPos.x) - playerChunkX * CHUNK_SIZE);
-    //     int localY = static_cast<int>(floor(playerPos.y - 2) - playerChunkY * CHUNK_SIZE);
-    //     int localZ = static_cast<int>(floor(playerPos.z) - playerChunkZ * CHUNK_SIZE);
-
-    //     setBlockID(chunk, localX, localY, localZ, 3);
-
-    //     meshSystem.updateMeshDataWithBlock(chunksMesh[hash], chunk, world->chunkMap, localX, localY, localZ);
-    // }
+    logicSystem->updatePlayerSlotKeys(this);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -91,6 +76,7 @@ void RenderSystem::update(std::unordered_map<unsigned int, TransformComponent> &
     processMeshQueue(); 
 
     glm::mat4 model = glm::mat4(1.0f);
+    unsigned int modelLocation = glGetUniformLocation(shader, "model");
     glUniformMatrix4fv(modelLocation, 1, GL_FALSE, glm::value_ptr(model));
 
     for (auto& pair : chunksMesh) {
@@ -132,7 +118,8 @@ void RenderSystem::update(std::unordered_map<unsigned int, TransformComponent> &
                               " Z: " + std::to_string((int)transformComponents[App::cameraID].position.z);
     drawText(coordinates, 5.0f, 0.0f, 1.0f, glm::vec3(1.0f, 1.0f, 1.0f));
     drawText(std::to_string(App::fps), 5.0f, fontHeight, 1.0f, glm::vec3(1.0f, 1.0f, 1.0f));
-
+    
+    drawHandItem(transformComponents);
     drawCursor();
 
 	glfwSwapBuffers(window);
@@ -333,11 +320,6 @@ void RenderSystem::drawText(const std::string& text, float x, float y, float sca
 
     glUseProgram(shaderText);
 
-    int w, h;
-    glfwGetFramebufferSize(window, &w, &h);
-    glm::mat4 projection = glm::ortho(0.0f, static_cast<float>(w), static_cast<float>(h), 0.0f);
-    glUniformMatrix4fv(glGetUniformLocation(shaderText, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-
     // Set text color
     glUniform3f(glGetUniformLocation(shaderText, "textColor"), color.r, color.g, color.b);
 
@@ -396,7 +378,6 @@ void RenderSystem::drawText(const std::string& text, float x, float y, float sca
     glUseProgram(shader);
 }
 
-double placeLastTime = glfwGetTime();
 void RenderSystem::renderHoverBlock(glm::vec3 playerPos, glm::vec3 cameraDir, float eyeHeight){
     RaycastHit hit = raycast(playerPos + glm::vec3(0, eyeHeight, 0), cameraDir, 5.0f, world->chunkMap);
 
@@ -487,118 +468,11 @@ void RenderSystem::renderHoverBlock(glm::vec3 playerPos, glm::vec3 cameraDir, fl
 
 
         // breaking and placing blocks
-        try
-        {
-            if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && glfwGetTime() - placeLastTime > 0.2) {
-                placeLastTime = glfwGetTime();
-
-                std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
-                int wx = x + hit.faceNormal.x;
-                int wy = y + hit.faceNormal.y;
-                int wz = z + hit.faceNormal.z;
-
-                int cx = wx / CHUNK_SIZE;
-                if (wx < 0 && wx % CHUNK_SIZE != 0) --cx;
-                int cy = wy / CHUNK_SIZE;
-                if (wy < 0 && wy % CHUNK_SIZE != 0) --cy;
-                int cz = wz / CHUNK_SIZE;
-                if (wz < 0 && wz % CHUNK_SIZE != 0) --cz;
-
-                uint64_t hash = hashChunkCoords(cx, cy, cz);
-                Chunk& chunk = world->chunkMap[hash];
-
-                // Local coordinates inside the chunk
-                int localX = wx - cx * CHUNK_SIZE;
-                int localY = wy - cy * CHUNK_SIZE;
-                int localZ = wz - cz * CHUNK_SIZE;
-                
-                changeBlockID(chunk, localX, localY, localZ, 3);
-
-                auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                chunksMesh[hash] = meshSystem.createMesh(data);
-            }
-
-            if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && glfwGetTime() - placeLastTime > 0.2) {
-                placeLastTime = glfwGetTime();
-
-                std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
-
-                int cx = x / CHUNK_SIZE;
-                if (x < 0 && x % CHUNK_SIZE != 0) --cx;
-                int cy = y / CHUNK_SIZE;
-                if (y < 0 && y % CHUNK_SIZE != 0) --cy;
-                int cz = z / CHUNK_SIZE;
-                if (z < 0 && z % CHUNK_SIZE != 0) --cz;
-
-                uint64_t hash = hashChunkCoords(cx, cy, cz);
-                Chunk& chunk = world->chunkMap[hash];
-
-                // Local coordinates inside the chunk
-                int localX = x - cx * CHUNK_SIZE;
-                int localY = y - cy * CHUNK_SIZE;
-                int localZ = z - cz * CHUNK_SIZE;
-                
-                changeBlockID(chunk, localX, localY, localZ, 0);
-
-                auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                chunksMesh[hash] = meshSystem.createMesh(data);
-
-                if(localX == 0){
-                    uint64_t hash = hashChunkCoords(cx - 1, cy, cz);
-                    Chunk& chunk = world->chunkMap[hash];
-
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    chunksMesh[hash] = meshSystem.createMesh(data);
-                }else if(localX == CHUNK_SIZE - 1){
-                    uint64_t hash = hashChunkCoords(cx + 1, cy, cz);
-                    Chunk& chunk = world->chunkMap[hash];
-
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    chunksMesh[hash] = meshSystem.createMesh(data);
-                }
-                
-                if(localY == 0){
-                    uint64_t hash = hashChunkCoords(cx, cy - 1, cz);
-                    Chunk& chunk = world->chunkMap[hash];
-
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    chunksMesh[hash] = meshSystem.createMesh(data);
-                }else if(localY == CHUNK_SIZE - 1){
-                    uint64_t hash = hashChunkCoords(cx, cy + 1, cz);
-                    Chunk& chunk = world->chunkMap[hash];
-
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    chunksMesh[hash] = meshSystem.createMesh(data);
-                }
-                
-                if(localZ == 0){
-                    uint64_t hash = hashChunkCoords(cx, cy, cz - 1);
-                    Chunk& chunk = world->chunkMap[hash];
-
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    chunksMesh[hash] = meshSystem.createMesh(data);
-                }else if(localZ == CHUNK_SIZE - 1){
-                    uint64_t hash = hashChunkCoords(cx, cy, cz + 1);
-                    Chunk& chunk = world->chunkMap[hash];
-
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    chunksMesh[hash] = meshSystem.createMesh(data);
-                }
-            }
-        }
-        catch(const std::exception& e)
-        {
-            std::cerr << e.what() << '\n';
-        }
-        
-        
+        logicSystem->handlePlayerMouseClick(hit, chunkMapMutex, meshCreationQueueMutex, meshSystem, chunksMesh);
     }
 }
 
 void RenderSystem::drawCursor() {
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
-
     glDisable(GL_CULL_FACE); // Disable culling for 2D text quads
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -606,13 +480,13 @@ void RenderSystem::drawCursor() {
 
     glUseProgram(shader2D);
 
-    glm::mat4 projection = glm::ortho(0.0f, float(width), float(height), 0.0f);
-    glUniformMatrix4fv(glGetUniformLocation(shader2D, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    int width, height;
+    glfwGetFramebufferSize(window, &width, &height);
 
     glUniform1i(glGetUniformLocation(shader2D, "useTexture"), 0);  // plain color
     glUniform4f(glGetUniformLocation(shader2D, "color"), 1.0f, 1.0f, 1.0f, 1.0f); // white
 
-    float cursorSize = 0.5f;
+    float cursorSize = 1.5f;
     glUniform2f(glGetUniformLocation(shader2D, "scale"), cursorSize, cursorSize);
     glUniform2f(glGetUniformLocation(shader2D, "offset"), width / 2.0f, height / 2.0f);
 
@@ -625,6 +499,46 @@ void RenderSystem::drawCursor() {
     glEnable(GL_CULL_FACE); 
     glDisable(GL_BLEND);
 
+    glUseProgram(shader);
+}
+
+void RenderSystem::drawHandItem(std::unordered_map<unsigned int, TransformComponent>& transformComponents) {
+    glClear(GL_DEPTH_BUFFER_BIT);
+
+    TransformComponent& cameraTransform = transformComponents.at(App::cameraID);
+    glm::vec3 cameraPos = cameraTransform.position;
+
+    glm::vec3 cameraDir;
+    float yaw   = glm::radians(cameraTransform.rotation.y);
+    float pitch = glm::radians(cameraTransform.rotation.x);
+    cameraDir.x = cos(pitch) * sin(yaw);
+    cameraDir.y = -sin(pitch);
+    cameraDir.z = -cos(pitch) * cos(yaw);
+    cameraDir = glm::normalize(cameraDir);
+
+    glm::mat4 mainView = glm::lookAt(cameraPos, cameraPos + cameraDir, glm::vec3(0.0f, 1.0f, 0.0f));
+
+    glUseProgram(shader3D_hud);
+
+    glm::mat4 handItemView = glm::mat4(glm::mat3(mainView));
+    glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "view"), 1, GL_FALSE, glm::value_ptr(handItemView));
+
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::rotate(model, glm::radians(-cameraTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(-cameraTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    model = glm::translate(model, glm::vec3(0.6f, -0.6f, -0.5f)); 
+    model = glm::rotate(model, glm::radians(-10.0f), glm::vec3(1.0f, 0.0f, 0.0f)); 
+    model = glm::rotate(model, glm::radians(-10.0f), glm::vec3(0.0f, 1.0f, 0.0f)); 
+    model = glm::scale(model, glm::vec3(0.35f)); 
+    glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "model"), 1, GL_FALSE, glm::value_ptr(model));
+
+    glBindTexture(GL_TEXTURE_2D, blocksTextureID);
+    glBindVertexArray(handItemMesh.VAO);
+    glDrawElements(GL_TRIANGLES, handItemMesh.indexCount, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+
+    // 4. Switch back to the main world shader for subsequent rendering.
     glUseProgram(shader);
 }
 
@@ -643,10 +557,10 @@ void RenderSystem::setUpBuffers(){
     // ------------ CURSOR ----------------
 
     float cursorVertices[] = {
-        -15,  0,
-        15,  0,
-        0, -15,
-        0,  15
+        -5,  0,
+        5,  0,
+        0, -5,
+        0,  5
     };
 
     // Set up VAO/VBO once
@@ -697,6 +611,9 @@ void RenderSystem::setUpBuffers(){
     glEnableVertexAttribArray(1); // uv
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glBindVertexArray(0);
+
+    // --- HAND ITEM MESH ---
+    generateHandItemMesh(1);
 }
 
 void RenderSystem::saveWorld(){
@@ -707,5 +624,85 @@ void RenderSystem::saveWorld(){
         for (auto& [hash, chunk] : chunkMap) {
             writeChunkToFile(chunk, world->seed);
         }
+    }
+}
+
+void RenderSystem::generateHandItemMesh(int block_id){
+    {
+        // These values should match your texture atlas settings.
+        const float ATLAS_WIDTH = meshSystem.atlasWidthPixels;   // Width of your texture atlas in pixels
+        const float ATLAS_HEIGHT = meshSystem.atlasHeightPixels; // Height of your texture atlas in pixels
+        const float TILE_SIZE = meshSystem.blockTexSize;   // Width and height of a single tile in pixels
+
+        // UVs for side texture (tile column 0)
+        float u0_side = (0.0f * TILE_SIZE) / ATLAS_WIDTH;
+        float u1_side = u0_side + (TILE_SIZE / ATLAS_WIDTH);
+
+        // UVs for bottom texture (tile column 1)
+        float u0_bottom = (1.0f * TILE_SIZE) / ATLAS_WIDTH;
+        float u1_bottom = u0_bottom + (TILE_SIZE / ATLAS_WIDTH);
+
+        // UVs for top texture (tile column 2)
+        float u0_top = (2.0f * TILE_SIZE) / ATLAS_WIDTH;
+        float u1_top = u0_top + (TILE_SIZE / ATLAS_WIDTH);
+
+        // V coordinates are the same for all faces of a given block
+        float v0_base = ((block_id - 1) * TILE_SIZE) / ATLAS_HEIGHT;
+        float v1_base = v0_base + (TILE_SIZE / ATLAS_HEIGHT);
+        
+        // A high light level to make the hand item always appear bright.
+        const float lightLevel = 0.85f; 
+
+        float vertices[] = {
+            // positions          // texture coords       // light
+            // Back face (-Z) - SIDE
+            -0.5f, -0.5f, -0.5f,  u0_side, v1_base, lightLevel,
+             0.5f, -0.5f, -0.5f,  u1_side, v1_base, lightLevel,
+             0.5f,  0.5f, -0.5f,  u1_side, v0_base, lightLevel,
+            -0.5f,  0.5f, -0.5f,  u0_side, v0_base, lightLevel,
+
+            // Front face (+Z) - SIDE
+            -0.5f, -0.5f,  0.5f,  u0_side, v1_base, lightLevel,
+             0.5f, -0.5f,  0.5f,  u1_side, v1_base, lightLevel,
+             0.5f,  0.5f,  0.5f,  u1_side, v0_base, lightLevel,
+            -0.5f,  0.5f,  0.5f,  u0_side, v0_base, lightLevel,
+
+            // Left face (-X) - SIDE
+            -0.5f, -0.5f,  0.5f,  u0_side, v1_base, lightLevel,
+            -0.5f, -0.5f, -0.5f,  u1_side, v1_base, lightLevel,
+            -0.5f,  0.5f, -0.5f,  u1_side, v0_base, lightLevel,
+            -0.5f,  0.5f,  0.5f,  u0_side, v0_base, lightLevel,
+
+            // Right face (+X) - SIDE
+             0.5f, -0.5f, -0.5f,  u0_side, v1_base, lightLevel,
+             0.5f, -0.5f,  0.5f,  u1_side, v1_base, lightLevel,
+             0.5f,  0.5f,  0.5f,  u1_side, v0_base, lightLevel,
+             0.5f,  0.5f, -0.5f,  u0_side, v0_base, lightLevel,
+
+            // Bottom face (-Y) - BOTTOM
+            -0.5f, -0.5f,  0.5f,  u0_bottom, v1_base, lightLevel,
+             0.5f, -0.5f,  0.5f,  u1_bottom, v1_base, lightLevel,
+             0.5f, -0.5f, -0.5f,  u1_bottom, v0_base, lightLevel,
+            -0.5f, -0.5f, -0.5f,  u0_bottom, v0_base, lightLevel,
+
+            // Top face (+Y) - TOP
+            -0.5f,  0.5f, -0.5f,  u0_top, v1_base, 1.0f,
+             0.5f,  0.5f, -0.5f,  u1_top, v1_base, 1.0f,
+             0.5f,  0.5f,  0.5f,  u1_top, v0_base, 1.0f,
+            -0.5f,  0.5f,  0.5f,  u0_top, v0_base, 1.0f
+        };
+
+        unsigned int indices[] = {
+            0,1,2, 2,3,0, // back
+            4,5,6, 6,7,4,  // front
+            8,10,9, 10,8,11, // left
+            12,13,14, 14,15,12,  // right
+            18,17,16, 18,16,19,  // bottom
+            20,22,21, 22,20,23}; // top
+
+        MeshData handItemData;
+        handItemData.vertices.assign(vertices, vertices + sizeof(vertices)/sizeof(float));
+        handItemData.indices.assign(indices, indices + sizeof(indices)/sizeof(unsigned int));
+        handItemMesh = meshSystem.createMesh(handItemData);
     }
 }

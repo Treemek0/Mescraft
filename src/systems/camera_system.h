@@ -12,8 +12,8 @@
 class CameraSystem {
 public:
 
-    CameraSystem(unsigned int shader, GLFWwindow* window);
-    
+    CameraSystem(unsigned int shaders[], GLFWwindow* window);
+
     void update(std::unordered_map<unsigned int,TransformComponent> &transformComponents, std::unordered_map<unsigned int, PhysicsComponent> &physicsComponents, unsigned int cameraID, CameraComponent& cameraComponent, float dt);
     
 private:

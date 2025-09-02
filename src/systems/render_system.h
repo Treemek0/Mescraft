@@ -15,15 +15,18 @@
 #include <thread>
 #include <atomic> 
 #include <future>
+#include "camera_component.h"
+
+class LogicSystem;
 
 class RenderSystem {
 public:
 
-    RenderSystem(unsigned int shader, unsigned int shaderText, unsigned int shader2D, GLFWwindow* window, World* w, std::unordered_map<unsigned int, TransformComponent> transformComponents);
+    RenderSystem(unsigned int shaders[], GLFWwindow* window, World* w, std::unordered_map<unsigned int, TransformComponent> transformComponents, LogicSystem* logicSystem);
     
     ~RenderSystem();
 
-    void update(std::unordered_map<unsigned int,TransformComponent> &transformComponents,std::unordered_map<unsigned int,RenderComponent> &renderComponents);
+    void update(std::unordered_map<unsigned int,TransformComponent> &transformComponents,std::unordered_map<unsigned int,RenderComponent> &renderComponents, CameraComponent& cameraComponent);
     void generate_world(const glm::vec3& playerPos);
     void generate_world_meshes();
     unsigned int make_texture(const char* filename);
@@ -34,6 +37,9 @@ public:
     void drawCursor();
     void setUpBuffers();
     void saveWorld();
+    void drawHandItem(std::unordered_map<unsigned int, TransformComponent>& transformComponents);
+
+    void generateHandItemMesh(int block_id);
 
     std::vector<unsigned int> textures;
 
@@ -62,6 +68,7 @@ private:
     unsigned int shaderText;
     unsigned int shader;
     unsigned int shader2D;
+    unsigned int shader3D_hud;
     World* world;
     
     std::unordered_map<uint64_t, Mesh> chunksMesh;
@@ -73,8 +80,10 @@ private:
     MeshSystem meshSystem;
     unsigned int blocksTextureID;
     unsigned int hoverTextureID;
-    unsigned int modelLocation;
     GLFWwindow* window;
+    LogicSystem* logicSystem;
+
+    Mesh handItemMesh;
 
     int lastPlayerChunkX = INT_MAX;
     int lastPlayerChunkY = INT_MAX;

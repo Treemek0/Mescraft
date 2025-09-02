@@ -7,6 +7,5 @@ void MotionSystem::update(std::unordered_map<unsigned int,TransformComponent> &t
         transformComponents[entity.first].position += entity.second.velocity * dt;
 
         entity.second.velocity *= std::pow(1.0f - friction, dt);
-
     }
 }

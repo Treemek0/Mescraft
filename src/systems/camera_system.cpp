@@ -1,10 +1,10 @@
 #include "camera_system.h"
 
-CameraSystem::CameraSystem(unsigned int shader, GLFWwindow* window) {
+CameraSystem::CameraSystem(unsigned int shaders[], GLFWwindow* window) {
     this->window = window;
 
-    glUseProgram(shader);
-    viewLocation = glGetUniformLocation(shader, "view");
+    glUseProgram(shaders[0]);
+    viewLocation = glGetUniformLocation(shaders[0], "view");
 }
 
 void CameraSystem::update(
@@ -28,11 +28,12 @@ void CameraSystem::update(
     right = glm::normalize(glm::cross(forwards, global_up));
     up = glm::normalize(glm::cross(right, forwards));
 
-    glm::mat4 view = glm::lookAt(pos, pos + forwards, up);
+    glm::mat4& view = cameraComponent.viewMatrix;
+    view = glm::lookAt(pos, pos + forwards, up);
 
     glUniformMatrix4fv(viewLocation, 1, GL_FALSE, glm::value_ptr(view));
 
-    float speed = 5.0f;
+    float speed = 10.0f;
 
     if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
         speed = 30.0f;
