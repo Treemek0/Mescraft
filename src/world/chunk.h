@@ -23,7 +23,7 @@ inline uint64_t hashChunkCoords(int x, int y, int z) {
 }
 
 inline uint8_t getBlockID(const Chunk& chunk, int x, int y, int z) {
-    return chunk.blocks[x + y*CHUNK_SIZE + z*CHUNK_SIZE*CHUNK_SIZE]; // x + y*chunkSize + z*chunkSize*chunkSize; (0-7 coords)
+    return chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE]; // x + y*chunkSize + z*chunkSize*chunkSize; (0-7 coords)
 }
 
 inline int getLocalCoord(int worldCoord) {

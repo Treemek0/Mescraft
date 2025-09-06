@@ -2,7 +2,7 @@
 
 struct Inventory {
     int selectedSlot = 0;
-    int items[36];
+    int items[36] = {0};
 
     inline int getSelectedItem(){
         return items[selectedSlot];

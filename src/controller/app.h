@@ -15,7 +15,6 @@
 #include "../world/world.h"
 #include <logic_system.h>
 
-
 class App {
 public:
     App();
@@ -25,6 +24,8 @@ public:
     Mesh make_cube_mesh(glm::vec3 size);
     void set_up_opengl();
     void make_systems();
+
+    static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 
     static unsigned int shaders[4];
 

@@ -12,7 +12,6 @@ App::App() {
 }
 
 App::~App() {
-    glDeleteTextures(renderSystem->textures.size(), renderSystem->textures.data());
     for (int shader : shaders){
         glDeleteShader(shader);
     }
@@ -157,13 +156,21 @@ void App::set_up_glfw() {
 
     glfwSwapInterval(0);
 
+    glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, window_size_changed_callback);
+    glfwSetScrollCallback(window, App::scroll_callback);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
 		std::cout << "Couldn't load opengl" << std::endl;
 		glfwTerminate();
 	}
+}
 
+void App::scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    App* app = static_cast<App*>(glfwGetWindowUserPointer(window));
+    if(app && app->logicSystem) {
+        app->logicSystem->scroll(xoffset, yoffset);
+    }
 }
 
 void App::window_size_changed_callback(GLFWwindow* window, int width, int height) {
@@ -261,7 +268,6 @@ void App::set_up_opengl() {
         glUniformMatrix4fv(proj3DLoc, 1, GL_FALSE, glm::value_ptr(proj3D));
     }
 }
-
 
 void App::make_systems() {
     world = new World(0);

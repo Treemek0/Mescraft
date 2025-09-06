@@ -16,6 +16,7 @@
 #include <atomic> 
 #include <future>
 #include "camera_component.h"
+#include "textureManager.h"
 
 class LogicSystem;
 
@@ -39,12 +40,11 @@ public:
     void saveWorld();
     void drawHandItem(std::unordered_map<unsigned int, TransformComponent>& transformComponents);
     void drawHotbar();
-    void drawItem(float x, float y, float scale);
+    void drawItem(float x, float y, float scale, int itemID);
 
-    void generateHandItemMesh(int block_id);
+    void generate3DCubeMesh();
 
-    std::vector<unsigned int> textures;
-
+    TextureManager textureManager;
 private:
     std::thread dataCreationThread;
     std::thread meshCreationThread;
@@ -86,6 +86,7 @@ private:
     unsigned int blocksTextureID;
     unsigned int hoverTextureID;
     unsigned int slotTextureID;
+    unsigned int slotSelectedTextureID;
     GLFWwindow* window;
     LogicSystem* logicSystem;
 

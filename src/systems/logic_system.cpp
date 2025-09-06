@@ -1,7 +1,7 @@
 #include "logic_system.h"
 #include "render_system.h"
 
-LogicSystem::LogicSystem(GLFWwindow* window, World* w) {
+LogicSystem::LogicSystem(GLFWwindow* window, World* w) : left_click(GLFW_MOUSE_BUTTON_LEFT, true, 1, window, 0.2f), right_click(GLFW_MOUSE_BUTTON_RIGHT, true, 1, window, 0.2f), middle_click(GLFW_MOUSE_BUTTON_MIDDLE, false, 1, window) {
     player = new Player();
     this->window = window;
     this->world = w;
@@ -12,6 +12,8 @@ LogicSystem::LogicSystem(GLFWwindow* window, World* w) {
     player->inventory.items[3] = 4;
     player->inventory.items[4] = 5;
     player->inventory.selectedSlot = 0;
+
+    
 };
 
 LogicSystem::~LogicSystem() noexcept {
@@ -25,31 +27,25 @@ void LogicSystem::update(float dt){
 void LogicSystem::updatePlayerSlotKeys(RenderSystem* renderSystem){
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) {
         player->inventory.selectedSlot = 0;
-        renderSystem->generateHandItemMesh(player->inventory.items[player->inventory.selectedSlot]);
     }
 
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) {
         player->inventory.selectedSlot = 1;
-        renderSystem->generateHandItemMesh(player->inventory.items[player->inventory.selectedSlot]);
     }
 
     if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) {
         player->inventory.selectedSlot = 2;
-        renderSystem->generateHandItemMesh(player->inventory.items[player->inventory.selectedSlot]);
     }
 
     if (glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS) {
         player->inventory.selectedSlot = 3;
-        renderSystem->generateHandItemMesh(player->inventory.items[player->inventory.selectedSlot]);
     }
 
     if (glfwGetKey(window, GLFW_KEY_5) == GLFW_PRESS) {
         player->inventory.selectedSlot = 4;
-        renderSystem->generateHandItemMesh(player->inventory.items[player->inventory.selectedSlot]);
     }
 }
 
-double placeLastTime = glfwGetTime();
 void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMutex, std::mutex& meshCreationQueueMutex, MeshSystem& meshSystem, std::unordered_map<uint64_t, Mesh>& chunksMesh){
     try
         {
@@ -57,9 +53,52 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
             int y = hit.block.position.y;
             int z = hit.block.position.z;
 
-            if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && glfwGetTime() - placeLastTime > 0.2) {
-                placeLastTime = glfwGetTime();
+            if(middle_click.isPressed()){
+                std::scoped_lock lock(chunkMapMutex);
+                int cx = x / CHUNK_SIZE;
+                if (x < 0 && x % CHUNK_SIZE != 0) --cx;
+                int cy = y / CHUNK_SIZE;
+                if (y < 0 && y % CHUNK_SIZE != 0) --cy;
+                int cz = z / CHUNK_SIZE;
+                if (z < 0 && z % CHUNK_SIZE != 0) --cz;
 
+                uint64_t hash = hashChunkCoords(cx, cy, cz);
+                Chunk& chunk = world->chunkMap[hash];
+
+                // Local coordinates inside the chunk
+                int localX = x - cx * CHUNK_SIZE;
+                int localY = y - cy * CHUNK_SIZE;
+                int localZ = z - cz * CHUNK_SIZE;
+
+                int id = static_cast<int>(getBlockID(chunk, localX, localY, localZ));
+
+                std::cout << "Scroll click, id:" << id << std::endl;
+                std::cout << localX << " " << localY << " " << localZ << std::endl;
+
+                bool foundGoodSlot = false;
+                for (int i = 0; i < 9; i++) {
+                    if (player->inventory.items[i] == id) {
+                        std::cout << "Found item in inventory at slot: " << i << std::endl;
+                        player->inventory.selectedSlot = i;
+                        foundGoodSlot = true;
+                        break;
+                    }
+
+                    if(player->inventory.items[i] == 0){
+                        std::cout << "Found empty slot in inventory at slot: " << i << std::endl;
+                        player->inventory.items[i] = id;
+                        player->inventory.selectedSlot = i;
+                        foundGoodSlot = true;
+                        break;
+                    }
+                }
+
+                if(!foundGoodSlot){
+                    player->inventory.items[player->inventory.selectedSlot] = id;
+                }
+            }
+
+            if(right_click.isPressed()) {
                 std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
                 int wx = x + hit.faceNormal.x;
                 int wy = y + hit.faceNormal.y;
@@ -90,9 +129,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                 chunksMesh[hash] = mesh;
             }
 
-            if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && glfwGetTime() - placeLastTime > 0.2) {
-                placeLastTime = glfwGetTime();
-
+            if(left_click.isPressed()) {
                 std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
 
                 int cx = x / CHUNK_SIZE;
@@ -190,4 +227,18 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
         {
             std::cerr << e.what() << '\n';
         }
+}
+
+void LogicSystem::scroll(double xoffset, double yoffset){
+    if(yoffset < 0){
+        player->inventory.selectedSlot++;
+    }else{
+        player->inventory.selectedSlot--;
+    }
+
+    if(player->inventory.selectedSlot < 0){
+        player->inventory.selectedSlot = 8;
+    }else if(player->inventory.selectedSlot > 8){
+        player->inventory.selectedSlot = 0;
+    }
 }

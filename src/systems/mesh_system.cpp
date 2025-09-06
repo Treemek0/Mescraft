@@ -270,6 +270,7 @@ MeshData MeshSystem::createChunkData(const Chunk& chunk, std::unordered_map<uint
 //     chunkMesh.indexCount = chunkMesh.data.indices.size();
 // }
 
+
 void MeshSystem::deleteMesh(const Mesh& mesh) {
     glDeleteBuffers(1, &mesh.VBO);
     glDeleteBuffers(1, &mesh.EBO);

@@ -9,42 +9,17 @@ World::World(unsigned int seed) : seed(seed), noiseGenerator(seed){
 }
 
 void World::generateChunk(Chunk& chunk){
-    std::mt19937 rng(uint32_t(
+    uint64_t chunkSeed = uint32_t(
         int(chunk.position.x) * 73856093 ^
         int(chunk.position.y) * 19349663 ^
-        int(chunk.position.z) * 83492791
-    ));
+        int(chunk.position.z) * 83492791 ^
+        seed * 141245
+    );
+    
+    std::mt19937 rng(chunkSeed);
 
     std::uniform_real_distribution<double> dist(0.0, 1.0);
-
-    int coalVeins = std::uniform_int_distribution<>(0, 1)(rng);
-
-    std::unordered_set<glm::ivec3, ivec3_hash> coalPositions;
-
-    if(coalVeins){
-        int x = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(rng);
-        int y = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(rng);
-        int z = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(rng);
-
-        // vein size
-        float veinSize = std::uniform_real_distribution<>(2.0f, 4.0f)(rng);
-
-        // create a small spherical blob of coal
-        for (int dx = -veinSize; dx <= veinSize; dx++) {
-            for (int dy = -veinSize; dy <= veinSize; dy++) {
-                for (int dz = -veinSize; dz <= veinSize; dz++) {
-                    float dist = sqrt(dx*dx + dy*dy + dz*dz);
-                    if (dist <= veinSize) {
-                        int px = x + dx;
-                        int py = y + dy;
-                        int pz = z + dz;
-
-                        coalPositions.insert(glm::ivec3(px, py, pz));
-                    }
-                }
-            }
-        }
-    }
+    bool isChunkAir = true;
 
     for (int x = 0; x < CHUNK_SIZE; ++x) {
         for (int z = 0; z < CHUNK_SIZE; ++z) {
@@ -59,17 +34,16 @@ void World::generateChunk(Chunk& chunk){
 
             for (int y = 0; y < CHUNK_SIZE; ++y) {
                 if(chunk.position.y + y < height){
-                    double r = dist(rng);
-                    double sum = 0.0;
                     BlockType chosenBlock = BlockType::Air;
 
+                    isChunkAir = false;
+
                     if(chunk.position.y + y < height - 3){
-                        if(coalPositions.count(glm::ivec3{x, y, z})){
-                            chosenBlock = BlockType::Coal_Ore;
-                        }else{
-                            chosenBlock = BlockType::Stone;
-                        }
+                        chosenBlock = BlockType::Stone;
                     }else{
+                        double r = dist(rng);
+                        double sum = 0.0;
+
                         for (auto& [prob, block] : biome.blocksVariants) {
                             sum += prob;
                             if (r <= sum) {
@@ -86,6 +60,17 @@ void World::generateChunk(Chunk& chunk){
                     }
                 }
             }
+        }
+    }
+
+    if(!isChunkAir){
+        std::unordered_map<glm::ivec3, BlockType, ivec3_hash> oresPositions;
+
+        generateOres(oresPositions, chunk, chunkSeed);
+
+        for (auto& [pos, block] : oresPositions) {
+            if(getBlockID(chunk, pos.x, pos.y, pos.z) != 4) continue;
+            setBlockID(chunk, pos.x, pos.y, pos.z, static_cast<int>(block));
         }
     }
 
@@ -116,4 +101,156 @@ int World::getHeight(double noiseHeight, double noiseTemp, double noiseMoist) {
 
     blendedHeight /= totalWeight; // normalize
     return static_cast<int>(blendedHeight);
+}
+
+void World::generateOres(std::unordered_map<glm::ivec3, BlockType, ivec3_hash>& oresPositions, Chunk& chunk, uint64_t chunkSeed){
+    {
+        uint64_t oreSeed = chunkSeed;
+        std::mt19937 vrng(oreSeed);
+        
+        int coalVeins = std::uniform_int_distribution<>(1, 2)(vrng);
+
+        for (int i = 1; i < coalVeins + 1; ++i) {
+            std::mt19937 xrng(oreSeed * i + 1);
+            std::mt19937 yrng(oreSeed * i + 2);
+            std::mt19937 zrng(oreSeed * i + 3);
+            int x = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(xrng);
+            int y = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(yrng);
+            int z = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(zrng);
+
+            // number of ores in this vein
+            int oreCount = std::uniform_int_distribution<>(5, 15)(vrng); // for example 3-8 ores
+
+            float veinSize = std::uniform_real_distribution<>(2.0f, 4.0f)(vrng);
+
+            int oresAdded = 0;
+            bool isCountComplete = false;
+            for (int dx = -veinSize; dx <= veinSize; dx++) {
+                if(isCountComplete) break;
+
+                for (int dy = -veinSize; dy <= veinSize; dy++) {
+                    if(isCountComplete) break;
+
+                    for (int dz = -veinSize; dz <= veinSize; dz++) {
+                        float dist = sqrt(dx*dx + dy*dy + dz*dz);
+                        if (dist <= veinSize) {
+                            int px = x + dx;
+                            int py = y + dy;
+                            int pz = z + dz;
+
+                            oresAdded++;
+                            if (oresAdded > oreCount) {
+                                isCountComplete = true;
+                                break;
+                            }
+
+                            if (px >= 0 && px < CHUNK_SIZE && py >= 0 && py < CHUNK_SIZE && pz >= 0 && pz < CHUNK_SIZE) {
+                                oresPositions.emplace(glm::ivec3(px, py, pz), BlockType::Coal_Ore);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        uint64_t oreSeed = chunkSeed + 1;
+        std::mt19937 vrng(oreSeed);
+        
+        int veins = std::uniform_int_distribution<>(0, 2)(vrng);
+
+        for (int i = 1; i < veins + 1; ++i) {
+            std::mt19937 xrng(oreSeed * i + 1);
+            std::mt19937 yrng(oreSeed * i + 2);
+            std::mt19937 zrng(oreSeed * i + 3);
+            int x = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(xrng);
+            int y = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(yrng);
+            int z = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(zrng);
+
+            // number of ores in this vein
+            int oreCount = std::uniform_int_distribution<>(3, 10)(vrng); // for example 3-8 ores
+
+            float veinSize = std::uniform_real_distribution<>(1.0f, 4.0f)(vrng);
+
+            int oresAdded = 0;
+            bool isCountComplete = false;
+            for (int dx = -veinSize; dx <= veinSize; dx++) {
+                if(isCountComplete) break;
+
+                for (int dy = -veinSize; dy <= veinSize; dy++) {
+                    if(isCountComplete) break;
+
+                    for (int dz = -veinSize; dz <= veinSize; dz++) {
+                        float dist = sqrt(dx*dx + dy*dy + dz*dz);
+                        if (dist <= veinSize) {
+                            int px = x + dx;
+                            int py = y + dy;
+                            int pz = z + dz;
+
+                            oresAdded++;
+                            if (oresAdded > oreCount) {
+                                isCountComplete = true;
+                                break;
+                            }
+
+                            if (px >= 0 && px < CHUNK_SIZE && py >= 0 && py < CHUNK_SIZE && pz >= 0 && pz < CHUNK_SIZE) {
+                                oresPositions.emplace(glm::ivec3(px, py, pz), BlockType::Iron_Ore);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+        {
+        uint64_t oreSeed = chunkSeed + 2;
+        std::mt19937 vrng(oreSeed);
+        
+        int veins = std::uniform_int_distribution<>(0, 1)(vrng);
+
+        for (int i = 1; i < veins + 1; ++i) {
+            std::mt19937 xrng(oreSeed * i + 1);
+            std::mt19937 yrng(oreSeed * i + 2);
+            std::mt19937 zrng(oreSeed * i + 3);
+            int x = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(xrng);
+            int y = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(yrng);
+            int z = std::uniform_int_distribution<>(0, CHUNK_SIZE-1)(zrng);
+
+            // number of ores in this vein
+            int oreCount = std::uniform_int_distribution<>(4, 7)(vrng); // for example 3-8 ores
+
+            float veinSize = std::uniform_real_distribution<>(1.0f, 4.0f)(vrng);
+
+            int oresAdded = 0;
+            bool isCountComplete = false;
+            for (int dx = -veinSize; dx <= veinSize; dx++) {
+                if(isCountComplete) break;
+
+                for (int dy = -veinSize; dy <= veinSize; dy++) {
+                    if(isCountComplete) break;
+
+                    for (int dz = -veinSize; dz <= veinSize; dz++) {
+                        float dist = sqrt(dx*dx + dy*dy + dz*dz);
+                        if (dist <= veinSize) {
+                            int px = x + dx;
+                            int py = y + dy;
+                            int pz = z + dz;
+
+                            oresAdded++;
+                            if (oresAdded > oreCount) {
+                                isCountComplete = true;
+                                break;
+                            }
+
+                            if (px >= 0 && px < CHUNK_SIZE && py >= 0 && py < CHUNK_SIZE && pz >= 0 && pz < CHUNK_SIZE) {
+                                oresPositions.emplace(glm::ivec3(px, py, pz), BlockType::Gold_Ore);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

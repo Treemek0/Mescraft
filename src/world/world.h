@@ -64,6 +64,15 @@ private:
     SimplexNoise noise; 
 };
 
+struct ivec3_hash {
+    std::size_t operator()(const glm::ivec3& v) const noexcept {
+        // Combine x, y, z into a single hash using bit-mixing
+        std::size_t h1 = std::hash<int>()(v.x);
+        std::size_t h2 = std::hash<int>()(v.y);
+        std::size_t h3 = std::hash<int>()(v.z);
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
+    }
+};
 
 class World {
 public:
@@ -75,14 +84,7 @@ public:
 
     void generateChunk(Chunk& chunk);
     int getHeight(double noiseHeight, double noiseTemp, double noiseMoist);
-};
 
-struct ivec3_hash {
-    std::size_t operator()(const glm::ivec3& v) const noexcept {
-        // Combine x, y, z into a single hash using bit-mixing
-        std::size_t h1 = std::hash<int>()(v.x);
-        std::size_t h2 = std::hash<int>()(v.y);
-        std::size_t h3 = std::hash<int>()(v.z);
-        return h1 ^ (h2 << 1) ^ (h3 << 2);
-    }
+private:
+    void generateOres(std::unordered_map<glm::ivec3, BlockType, ivec3_hash>& oresPositions, Chunk& chunk, uint64_t chunkSeed);
 };

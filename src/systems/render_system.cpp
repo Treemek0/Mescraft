@@ -1,9 +1,5 @@
 #include "render_system.h"
 #include <vector>
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb/stb_image.h"
-#define STB_IMAGE_RESIZE_IMPLEMENTATION
-#include "stb/stb_image_resize2.h"
 #include <iostream>
 #include <GL/gl.h>
 #include "../controller/app.h"
@@ -27,9 +23,11 @@ RenderSystem::RenderSystem(unsigned int shaders[], GLFWwindow* window, World* w,
     this->shader2D = shaders[1];
     this->shaderText = shaders[2];
     this->shader3D_hud = shaders[3];
-    blocksTextureID = make_texture("textures/blocks.png");
-    hoverTextureID = make_texture("textures/hover.png");
-    slotTextureID = make_texture("textures/slot.png");
+
+    blocksTextureID = textureManager.loadTexture("textures/blocks.png", TextureWrap::CLAMP_TO_EDGE, TextureWrap::CLAMP_TO_EDGE, TextureFilter::NEAREST, TextureFilter::NEAREST);
+    hoverTextureID = textureManager.loadTexture("textures/hover.png", TextureWrap::CLAMP_TO_EDGE, TextureWrap::CLAMP_TO_EDGE, TextureFilter::NEAREST, TextureFilter::NEAREST);
+    slotTextureID = textureManager.loadTexture("textures/slot.png", TextureWrap::CLAMP_TO_EDGE, TextureWrap::CLAMP_TO_EDGE, TextureFilter::NEAREST, TextureFilter::NEAREST);
+    slotSelectedTextureID = textureManager.loadTexture("textures/slot_selected.png", TextureWrap::CLAMP_TO_EDGE, TextureWrap::CLAMP_TO_EDGE, TextureFilter::NEAREST, TextureFilter::NEAREST);
     this->window = window;
     this->logicSystem = logicSystem;
 
@@ -148,6 +146,7 @@ void RenderSystem::update(std::unordered_map<unsigned int, TransformComponent> &
     drawText(std::to_string(App::fps), 5.0f, fontHeight, 1.0f, glm::vec3(1.0f, 1.0f, 1.0f));
     
     drawHandItem(transformComponents);
+    drawHotbar();
     drawCursor();
 
 	glfwSwapBuffers(window);
@@ -314,38 +313,6 @@ bool RenderSystem::neighborsReady(uint64_t hash, const std::unordered_map<uint64
     return true;
 }
 
-unsigned int RenderSystem::make_texture(const char* filename) {
-    int width, height, channels;
-	unsigned char* data = stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha);
-    if (data == NULL) {
-        std::cout << "Failed to load texture: " << filename << std::endl;
-        return 0;
-    }
-    
-	//make the texture
-    unsigned int texture;
-	glGenTextures(1, &texture);
-    textures.push_back(texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-	
-    //load data
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    
-    // Generate mipmaps for smoother textures at a distance
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-    //free data
-	stbi_image_free(data);
-
-    //Configure sampler
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    return texture;
-}
-
 
 void RenderSystem::drawText(const std::string& text, float x, float y, float scale, const glm::vec3& color) 
 {
@@ -504,7 +471,6 @@ void RenderSystem::renderHoverBlock(glm::vec3 playerPos, glm::vec3 cameraDir, fl
         glDisable(GL_BLEND);
         meshSystem.deleteMesh(hoverMesh);
 
-
         // breaking and placing blocks
         logicSystem->handlePlayerMouseClick(hit, chunkMapMutex, meshCreationQueueMutex, meshSystem, chunksMesh);
     }
@@ -541,6 +507,8 @@ void RenderSystem::drawCursor() {
 }
 
 void RenderSystem::drawHandItem(std::unordered_map<unsigned int, TransformComponent>& transformComponents) {
+    if(logicSystem->player->inventory.getSelectedItem() == 0) return;
+
     glClear(GL_DEPTH_BUFFER_BIT);
 
     TransformComponent& cameraTransform = transformComponents.at(App::cameraID);
@@ -560,6 +528,14 @@ void RenderSystem::drawHandItem(std::unordered_map<unsigned int, TransformCompon
 
     glm::mat4 handItemView = glm::mat4(glm::mat3(mainView));
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "view"), 1, GL_FALSE, glm::value_ptr(handItemView));
+
+    int itemID = logicSystem->player->inventory.getSelectedItem();
+    float uSize = meshSystem.blockTexSize / static_cast<float>(meshSystem.atlasWidthPixels);
+    float vSize = meshSystem.blockTexSize / static_cast<float>(meshSystem.atlasHeightPixels);
+    glUniform2f(glGetUniformLocation(shader3D_hud, "tileSize"), uSize, vSize);
+
+    float yOffset = (itemID - 1) * vSize;
+    glUniform2f(glGetUniformLocation(shader3D_hud, "tileOffset"), 0.0f, yOffset);
 
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::rotate(model, glm::radians(-cameraTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -601,7 +577,7 @@ RenderSystem::~RenderSystem() {
     }
 
     // Clean up textures
-    glDeleteTextures(textures.size(), textures.data());
+    textureManager.deleteTextures();
     glDeleteTextures(1, &fontTexture);
 
     // Clean up UI buffers
@@ -624,68 +600,45 @@ void RenderSystem::saveWorld(){
     }
 }
 
-void RenderSystem::generateHandItemMesh(int block_id) {
+void RenderSystem::generate3DCubeMesh() {
     if (handItemMesh.VAO != 0) {
         meshSystem.deleteMesh(handItemMesh);
     }
-
-    const float ATLAS_WIDTH  = meshSystem.atlasWidthPixels;
-    const float ATLAS_HEIGHT = meshSystem.atlasHeightPixels;
-    const float TILE_SIZE    = meshSystem.blockTexSize;
-
-    // UV coordinates for each face
-    float u0_side   = 0.0f * TILE_SIZE / ATLAS_WIDTH;
-    float u1_side   = u0_side + TILE_SIZE / ATLAS_WIDTH;
-    float u0_bottom = 1.0f * TILE_SIZE / ATLAS_WIDTH;
-    float u1_bottom = u0_bottom + TILE_SIZE / ATLAS_WIDTH;
-    float u0_top    = 2.0f * TILE_SIZE / ATLAS_WIDTH;
-    float u1_top    = u0_top + TILE_SIZE / ATLAS_WIDTH;
-
-    float v0_base = ((block_id - 1) * TILE_SIZE) / ATLAS_HEIGHT;
-    float v1_base = v0_base + TILE_SIZE / ATLAS_HEIGHT;
 
     // Light levels
     uint8_t sideLight   = 200;
     uint8_t bottomLight = 150;
     uint8_t topLight    = 255;
 
-    std::vector<Vertex> vertices = {
-        // Back face (-Z) - side
-        {{-0.5f, -0.5f, -0.5f}, {u0_side, v1_base}, sideLight},
-        {{ 0.5f, -0.5f, -0.5f}, {u1_side, v1_base}, sideLight},
-        {{ 0.5f,  0.5f, -0.5f}, {u1_side, v0_base}, sideLight},
-        {{-0.5f,  0.5f, -0.5f}, {u0_side, v0_base}, sideLight},
-
-        // Front face (+Z) - side
-        {{-0.5f, -0.5f,  0.5f}, {u0_side, v1_base}, sideLight},
-        {{ 0.5f, -0.5f,  0.5f}, {u1_side, v1_base}, sideLight},
-        {{ 0.5f,  0.5f,  0.5f}, {u1_side, v0_base}, sideLight},
-        {{-0.5f,  0.5f,  0.5f}, {u0_side, v0_base}, sideLight},
-
-        // Left face (-X) - side
-        {{-0.5f, -0.5f,  0.5f}, {u0_side, v1_base}, sideLight},
-        {{-0.5f, -0.5f, -0.5f}, {u1_side, v1_base}, sideLight},
-        {{-0.5f,  0.5f, -0.5f}, {u1_side, v0_base}, sideLight},
-        {{-0.5f,  0.5f,  0.5f}, {u0_side, v0_base}, sideLight},
-
-        // Right face (+X) - side
-        {{ 0.5f, -0.5f, -0.5f}, {u0_side, v1_base}, sideLight},
-        {{ 0.5f, -0.5f,  0.5f}, {u1_side, v1_base}, sideLight},
-        {{ 0.5f,  0.5f,  0.5f}, {u1_side, v0_base}, sideLight},
-        {{ 0.5f,  0.5f, -0.5f}, {u0_side, v0_base}, sideLight},
-
-        // Bottom face (-Y) - bottom
-        {{-0.5f, -0.5f,  0.5f}, {u0_bottom, v1_base}, bottomLight},
-        {{ 0.5f, -0.5f,  0.5f}, {u1_bottom, v1_base}, bottomLight},
-        {{ 0.5f, -0.5f, -0.5f}, {u1_bottom, v0_base}, bottomLight},
-        {{-0.5f, -0.5f, -0.5f}, {u0_bottom, v0_base}, bottomLight},
-
-        // Top face (+Y) - top
-        {{-0.5f,  0.5f, -0.5f}, {u0_top, v1_base}, topLight},
-        {{ 0.5f,  0.5f, -0.5f}, {u1_top, v1_base}, topLight},
-        {{ 0.5f,  0.5f,  0.5f}, {u1_top, v0_base}, topLight},
-        {{-0.5f,  0.5f,  0.5f}, {u0_top, v0_base}, topLight},
+    std::array<glm::vec2, 4> unitUV = {
+        glm::vec2(0.0f, 1.0f),
+        glm::vec2(1.0f, 1.0f),
+        glm::vec2(1.0f, 0.0f),
+        glm::vec2(0.0f, 0.0f)
     };
+
+    auto addFace = [&](glm::vec3 p0, glm::vec3 p1, glm::vec3 p2, glm::vec3 p3, 
+                    int faceXOffset, uint8_t light, std::vector<Vertex>& out) {
+        out.push_back({p0, unitUV[0] + glm::vec2(faceXOffset, 0), light});
+        out.push_back({p1, unitUV[1] + glm::vec2(faceXOffset, 0), light});
+        out.push_back({p2, unitUV[2] + glm::vec2(faceXOffset, 0), light});
+        out.push_back({p3, unitUV[3] + glm::vec2(faceXOffset, 0), light});
+    };
+
+    std::vector<Vertex> vertices;
+    vertices.reserve(24);
+
+    // Back (-Z), Front (+Z), Left (-X), Right (+X) → side texture (xOffset = 0)
+    addFace({-0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f}, 0, sideLight, vertices);
+    addFace({-0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, 0, sideLight, vertices);
+    addFace({-0.5f,-0.5f, 0.5f}, {-0.5f,-0.5f,-0.5f}, {-0.5f, 0.5f,-0.5f}, {-0.5f, 0.5f, 0.5f}, 0, sideLight, vertices);
+    addFace({ 0.5f,-0.5f,-0.5f}, { 0.5f,-0.5f, 0.5f}, { 0.5f, 0.5f, 0.5f}, { 0.5f, 0.5f,-0.5f}, 0, sideLight, vertices);
+
+    // Bottom (-Y) → xOffset = 1
+    addFace({-0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f, 0.5f}, { 0.5f,-0.5f,-0.5f}, {-0.5f,-0.5f,-0.5f}, 1, bottomLight, vertices);
+
+    // Top (+Y) → xOffset = 2
+    addFace({-0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f,-0.5f}, { 0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, 2, topLight, vertices);
 
     std::vector<unsigned int> indices = {
         0,1,2, 2,3,0,       // back
@@ -714,21 +667,22 @@ void RenderSystem::drawHotbar() {
 
     glUniform1f(glGetUniformLocation(shader2D, "useTexture"), 1);
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, slotTextureID);
-    glUniform1i(glGetUniformLocation(shader2D, "texture0"), 0);
-
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
     int slotSpacing = width/36; // width/4/9
     for (int i = 0; i < 9; ++i) {
+        glUseProgram(shader2D);
 
         float slotX = (width / 2.0f) - (4*slotSpacing) + (i * slotSpacing);
         float slotY = height - slotSpacing;
 
         glUniform2f(glGetUniformLocation(shader2D, "offset"), slotX, slotY);
         glUniform2f(glGetUniformLocation(shader2D, "scale"), slotSpacing/2, slotSpacing/2);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (logicSystem->player->inventory.selectedSlot == i)?slotSelectedTextureID:slotTextureID);
+        glUniform1i(glGetUniformLocation(shader2D, "texture0"), 0);
 
         // 4. Bind the quad's VAO
         glBindVertexArray(slotVAO);
@@ -739,45 +693,65 @@ void RenderSystem::drawHotbar() {
         // 6. Unbind the VAO for good practice
         glBindVertexArray(0);
 
-        //drawItem(slotX, slotY, slotSpacing/4); // TODO fix this
-        glUseProgram(shader2D);
+        int id = logicSystem->player->inventory.items[i];
+        if(id != 0){
+            drawItem(slotX, slotSpacing, slotSpacing/2, id);
+        }
+
         glDisable(GL_CULL_FACE); // Disable culling for 2D text quads
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_DEPTH_TEST);
     }
 
+    glUseProgram(shader3D_hud);
+    float aspect = static_cast<float>(width) / static_cast<float>(height);
+    glm::mat4 proj3D = glm::perspective(App::fov, aspect, 0.01f, 1000.0f);
+    glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "projection"), 1, GL_FALSE, glm::value_ptr(proj3D));
+
     glUseProgram(shader);
 }
 
-void RenderSystem::drawItem(float slotX, float slotY, float slotSize) {
+void RenderSystem::drawItem(float slotCenterX, float slotCenterY, float slotSize, int itemID) {
     // Save current viewport
     GLint prevViewport[4];
     glGetIntegerv(GL_VIEWPORT, prevViewport);
 
-    // Position small viewport for the slot
-    glViewport((int)slotX, (int)slotY, (int)slotSize*2, (int)slotSize*2);
+    // Render the item in a larger viewport for better resolution, e.g., 4x the slot size.
+    float renderSize = slotSize * 4.0f;
+
+    // Calculate the bottom-left corner for the larger viewport, centered on the slot.
+    int viewportX = static_cast<int>(slotCenterX - renderSize / 2.0f);
+    int viewportY = static_cast<int>(slotCenterY - renderSize / 2.0f);
+
+    glViewport(viewportX, viewportY, static_cast<int>(renderSize), static_cast<int>(renderSize));
 
     glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
     glEnable(GL_CULL_FACE);
+    glClear(GL_DEPTH_BUFFER_BIT);
 
-    glUseProgram(shader3D_hud); // your 3D shader
+    glUseProgram(shader3D_hud);
 
-    // --- Projection (square aspect) ---
-    glm::mat4 proj = glm::perspective(glm::radians(35.0f), 1.0f, 0.1f, 100.0f);
-
-    // --- View (tiny camera looking at origin) ---
-    glm::mat4 view = glm::lookAt(glm::vec3(0, 0, 2), glm::vec3(0,0,0), glm::vec3(0,1,0));
-
-    // --- Model (slight rotation to show 3D) ---
+    // --- View & Model (same as before) ---
+    glm::mat4 view = glm::lookAt(glm::vec3(0, 0, 3), glm::vec3(0,0,0), glm::vec3(0,1,0));
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::rotate(model, glm::radians(30.0f), glm::vec3(1,0,0));
     model = glm::rotate(model, glm::radians(45.0f), glm::vec3(0,1,0));
+
+    glm::mat4 proj = glm::ortho(-2.0f, 2.0f, -2.0f, 2.0f, 0.1f, 100.0f);
 
     // Upload uniforms
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "projection"), 1, GL_FALSE, glm::value_ptr(proj));
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "view"), 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "model"), 1, GL_FALSE, glm::value_ptr(model));
+
+    float uSize = meshSystem.blockTexSize / static_cast<float>(meshSystem.atlasWidthPixels);
+    float vSize = meshSystem.blockTexSize / static_cast<float>(meshSystem.atlasHeightPixels);
+    glUniform2f(glGetUniformLocation(shader3D_hud, "tileSize"), uSize, vSize);
+
+    float yOffset = (itemID - 1) * vSize;
+    glUniform2f(glGetUniformLocation(shader3D_hud, "tileOffset"), 0.0f, yOffset);
 
     // Draw block/item mesh here
     glBindTexture(GL_TEXTURE_2D, blocksTextureID);
@@ -788,6 +762,7 @@ void RenderSystem::drawItem(float slotX, float slotY, float slotSize) {
     // Restore viewport
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
 
+    glEnable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
 }
 
@@ -852,7 +827,7 @@ void RenderSystem::setUpBuffers(){
     }
 
     // --- HAND ITEM MESH ---
-    generateHandItemMesh(1);
+    generate3DCubeMesh();
 
     // --- SLOT MESH ---
     {
