@@ -2,8 +2,11 @@
 #include "PerlinNoise.hpp"
 #include "SimplexNoise.h"
 #include <unordered_map>
+#include <unordered_set>
 #include "./chunk.h"
+#include <memory>
 #include "./biome.h"
+#include <shared_mutex>
 
 class NoiseGenerator {
 public:
@@ -77,7 +80,12 @@ struct ivec3_hash {
 class World {
 public:
     int seed;
-    std::unordered_map<uint64_t, Chunk> chunkMap;
+    std::unordered_map<uint64_t, std::shared_ptr<Chunk>> chunkMap;
+    std::shared_mutex chunkMapMutex;
+
+    std::unordered_set<uint64_t> loadedChunks;
+    std::shared_mutex loadedChunksMutex;
+
     NoiseGenerator noiseGenerator;
 
     World(unsigned int seed);

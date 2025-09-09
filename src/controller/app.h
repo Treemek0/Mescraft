@@ -51,10 +51,10 @@ public:
 
     World* world;
 
+    unsigned int entity_count = 0;
+    GLFWwindow* window;
+
 private:
     void set_up_glfw();
     static void window_size_changed_callback(GLFWwindow* window, int width, int height);
-
-    unsigned int entity_count = 0;
-    GLFWwindow* window;
 };

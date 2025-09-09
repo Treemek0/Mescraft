@@ -272,8 +272,8 @@ void App::set_up_opengl() {
 void App::make_systems() {
     world = new World(0);
 
-    logicSystem = new LogicSystem(window, world);
-    motionSystem = new MotionSystem();
+    logicSystem = new LogicSystem(window, world, renderSystem);
+    motionSystem = new MotionSystem(world);
     cameraSystem = new CameraSystem(shaders, window);
     renderSystem = new RenderSystem(shaders, window, world, transformComponents, logicSystem);
     meshSystem = new MeshSystem();

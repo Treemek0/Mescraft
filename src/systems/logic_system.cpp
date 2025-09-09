@@ -1,19 +1,19 @@
 #include "logic_system.h"
 #include "render_system.h"
 
-LogicSystem::LogicSystem(GLFWwindow* window, World* w) : left_click(GLFW_MOUSE_BUTTON_LEFT, true, 1, window, 0.2f), right_click(GLFW_MOUSE_BUTTON_RIGHT, true, 1, window, 0.2f), middle_click(GLFW_MOUSE_BUTTON_MIDDLE, false, 1, window) {
+LogicSystem::LogicSystem(GLFWwindow* window, World* w, RenderSystem* renderSystem) : left_click(GLFW_MOUSE_BUTTON_LEFT, true, 1, window, 0.2f), right_click(GLFW_MOUSE_BUTTON_RIGHT, true, 1, window, 0.2f), middle_click(GLFW_MOUSE_BUTTON_MIDDLE, false, 1, window) {
     player = new Player();
     this->window = window;
     this->world = w;
+    this->renderSystem = renderSystem;
 
-    player->inventory.items[0] = 1;
-    player->inventory.items[1] = 2;
-    player->inventory.items[2] = 3;
-    player->inventory.items[3] = 4;
-    player->inventory.items[4] = 5;
+    player->inventory.items[0] = Item(1, 1);
+    player->inventory.items[1] = Item(2, 1);
+    player->inventory.items[2] = Item(3, 1);
+    player->inventory.items[3] = Item(4, 1);
+    player->inventory.items[4] = Item(5, 1);
+    player->inventory.items[5] = Item(17, 1);
     player->inventory.selectedSlot = 0;
-
-    
 };
 
 LogicSystem::~LogicSystem() noexcept {
@@ -24,7 +24,9 @@ void LogicSystem::update(float dt){
     player->update(dt);
 }
 
-void LogicSystem::updatePlayerSlotKeys(RenderSystem* renderSystem){
+void LogicSystem::updatePlayerSlotKeys(){
+    int selectedSlot = player->inventory.selectedSlot;
+
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) {
         player->inventory.selectedSlot = 0;
     }
@@ -44,9 +46,31 @@ void LogicSystem::updatePlayerSlotKeys(RenderSystem* renderSystem){
     if (glfwGetKey(window, GLFW_KEY_5) == GLFW_PRESS) {
         player->inventory.selectedSlot = 4;
     }
+
+    if (glfwGetKey(window, GLFW_KEY_6) == GLFW_PRESS) {
+        player->inventory.selectedSlot = 5;
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_7) == GLFW_PRESS) {
+        player->inventory.selectedSlot = 6;
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_8) == GLFW_PRESS) {
+        player->inventory.selectedSlot = 7;
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_9) == GLFW_PRESS) {
+        player->inventory.selectedSlot = 8;
+    }
+
+    if(selectedSlot != player->inventory.selectedSlot){
+        if(!player->inventory.getSelectedItem().name.empty()){
+            renderSystem->drawHotbarText(player->inventory.getSelectedItem().name);
+        }
+    }
 }
 
-void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMutex, std::mutex& meshCreationQueueMutex, MeshSystem& meshSystem, std::unordered_map<uint64_t, Mesh>& chunksMesh){
+void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chunkMapMutex, std::shared_mutex& meshCreationQueueMutex, MeshSystem& meshSystem, std::unordered_map<uint64_t, Mesh>& chunksMesh){
     try
         {
             int x = hit.block.position.x;
@@ -54,7 +78,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
             int z = hit.block.position.z;
 
             if(middle_click.isPressed()){
-                std::scoped_lock lock(chunkMapMutex);
+                std::unique_lock lock(chunkMapMutex);
                 int cx = x / CHUNK_SIZE;
                 if (x < 0 && x % CHUNK_SIZE != 0) --cx;
                 int cy = y / CHUNK_SIZE;
@@ -63,7 +87,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                 if (z < 0 && z % CHUNK_SIZE != 0) --cz;
 
                 uint64_t hash = hashChunkCoords(cx, cy, cz);
-                Chunk& chunk = world->chunkMap[hash];
+                Chunk& chunk = *world->chunkMap.at(hash);
 
                 // Local coordinates inside the chunk
                 int localX = x - cx * CHUNK_SIZE;
@@ -77,16 +101,16 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
 
                 bool foundGoodSlot = false;
                 for (int i = 0; i < 9; i++) {
-                    if (player->inventory.items[i] == id) {
+                    if (player->inventory.items[i].id == id) {
                         std::cout << "Found item in inventory at slot: " << i << std::endl;
                         player->inventory.selectedSlot = i;
                         foundGoodSlot = true;
                         break;
                     }
 
-                    if(player->inventory.items[i] == 0){
+                    if(player->inventory.items[i].id == 0){
                         std::cout << "Found empty slot in inventory at slot: " << i << std::endl;
-                        player->inventory.items[i] = id;
+                        player->inventory.items[i] = Item(id, 1);
                         player->inventory.selectedSlot = i;
                         foundGoodSlot = true;
                         break;
@@ -94,12 +118,14 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                 }
 
                 if(!foundGoodSlot){
-                    player->inventory.items[player->inventory.selectedSlot] = id;
+                    player->inventory.items[player->inventory.selectedSlot] = Item(id, 1);
                 }
+
+                renderSystem->drawHotbarText(player->inventory.getSelectedItem().name);
             }
 
             if(right_click.isPressed()) {
-                std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
+                std::scoped_lock lock(meshCreationQueueMutex, chunkMapMutex);
                 int wx = x + hit.faceNormal.x;
                 int wy = y + hit.faceNormal.y;
                 int wz = z + hit.faceNormal.z;
@@ -112,14 +138,21 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                 if (wz < 0 && wz % CHUNK_SIZE != 0) --cz;
 
                 uint64_t hash = hashChunkCoords(cx, cy, cz);
-                Chunk& chunk = world->chunkMap[hash];
+                Chunk& chunk = *world->chunkMap.at(hash);
 
                 // Local coordinates inside the chunk
                 int localX = wx - cx * CHUNK_SIZE;
                 int localY = wy - cy * CHUNK_SIZE;
                 int localZ = wz - cz * CHUNK_SIZE;
                 
-                changeBlockID(chunk, localX, localY, localZ, player->inventory.getSelectedItem());
+                int id =  player->inventory.getSelectedItem().id;
+
+                changeBlockID(chunk, localX, localY, localZ, id);
+                
+                if(id == 17){ // wood
+                    uint8_t rotation = getRotationFromNormal(hit.faceNormal);
+                    changeBlockRotation(chunk, localX, localY, localZ, rotation);
+                }
 
                 auto data = meshSystem.createChunkData(chunk, world->chunkMap);
                 Mesh mesh = meshSystem.createMesh(data);
@@ -130,7 +163,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
             }
 
             if(left_click.isPressed()) {
-                std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
+                std::scoped_lock lock(meshCreationQueueMutex, chunkMapMutex);
 
                 int cx = x / CHUNK_SIZE;
                 if (x < 0 && x % CHUNK_SIZE != 0) --cx;
@@ -140,7 +173,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                 if (z < 0 && z % CHUNK_SIZE != 0) --cz;
 
                 uint64_t hash = hashChunkCoords(cx, cy, cz);
-                Chunk& chunk = world->chunkMap[hash];
+                Chunk& chunk = *world->chunkMap.at(hash);
 
                 // Local coordinates inside the chunk
                 int localX = x - cx * CHUNK_SIZE;
@@ -158,7 +191,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
 
                 if(localX == 0){
                     uint64_t hash = hashChunkCoords(cx - 1, cy, cz);
-                    Chunk& chunk = world->chunkMap[hash];
+                    Chunk& chunk = *world->chunkMap.at(hash);
 
                     auto data = meshSystem.createChunkData(chunk, world->chunkMap);
                     Mesh mesh = meshSystem.createMesh(data);
@@ -168,7 +201,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                     chunksMesh[hash] = mesh;
                 }else if(localX == CHUNK_SIZE - 1){
                     uint64_t hash = hashChunkCoords(cx + 1, cy, cz);
-                    Chunk& chunk = world->chunkMap[hash];
+                    Chunk& chunk = *world->chunkMap.at(hash);
 
                     auto data = meshSystem.createChunkData(chunk, world->chunkMap);
                     Mesh mesh = meshSystem.createMesh(data);
@@ -180,7 +213,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                 
                 if(localY == 0){
                     uint64_t hash = hashChunkCoords(cx, cy - 1, cz);
-                    Chunk& chunk = world->chunkMap[hash];
+                    Chunk& chunk = *world->chunkMap.at(hash);
 
                     auto data = meshSystem.createChunkData(chunk, world->chunkMap);
                     Mesh mesh = meshSystem.createMesh(data);
@@ -190,7 +223,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                     chunksMesh[hash] = mesh;
                 }else if(localY == CHUNK_SIZE - 1){
                     uint64_t hash = hashChunkCoords(cx, cy + 1, cz);
-                    Chunk& chunk = world->chunkMap[hash];
+                    Chunk& chunk = *world->chunkMap.at(hash);
 
                     auto data = meshSystem.createChunkData(chunk, world->chunkMap);
                     Mesh mesh = meshSystem.createMesh(data);
@@ -202,7 +235,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                 
                 if(localZ == 0){
                     uint64_t hash = hashChunkCoords(cx, cy, cz - 1);
-                    Chunk& chunk = world->chunkMap[hash];
+                    Chunk& chunk = *world->chunkMap.at(hash);
 
                     auto data = meshSystem.createChunkData(chunk, world->chunkMap);
                     Mesh mesh = meshSystem.createMesh(data);
@@ -212,7 +245,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::mutex& chunkMapMut
                     chunksMesh[hash] = mesh;
                 }else if(localZ == CHUNK_SIZE - 1){
                     uint64_t hash = hashChunkCoords(cx, cy, cz + 1);
-                    Chunk& chunk = world->chunkMap[hash];
+                    Chunk& chunk = *world->chunkMap.at(hash);
 
                     auto data = meshSystem.createChunkData(chunk, world->chunkMap);
                     Mesh mesh = meshSystem.createMesh(data);
@@ -240,5 +273,9 @@ void LogicSystem::scroll(double xoffset, double yoffset){
         player->inventory.selectedSlot = 8;
     }else if(player->inventory.selectedSlot > 8){
         player->inventory.selectedSlot = 0;
+    }
+
+    if(!player->inventory.getSelectedItem().name.empty()){
+        renderSystem->drawHotbarText(player->inventory.getSelectedItem().name);
     }
 }

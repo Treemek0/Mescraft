@@ -10,6 +10,8 @@ static App* app;
 
 int main() {
 
+	std::cout << __cplusplus << std::endl;
+
 	app = new App();
 
 	app->set_up_opengl();

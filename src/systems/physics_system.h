@@ -9,6 +9,8 @@
 
 class MotionSystem {
 public:
+    MotionSystem(World* world);
+
     void update(
         std::unordered_map<unsigned int,TransformComponent> &transformComponents,
         std::unordered_map<unsigned int,PhysicsComponent> &physicsComponents,
@@ -16,4 +18,8 @@ public:
 
     bool checkCollision(const Chunk& chunk, const glm::vec3& pos, const glm::vec3& size);
     double friction = 0.98;
+
+private:
+    World* world;
+
 };

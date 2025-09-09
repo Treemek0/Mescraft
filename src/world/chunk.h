@@ -10,8 +10,8 @@
 struct Chunk {
     glm::vec3 position;
     
-    std::unordered_map<uint64_t, uint8_t> modifiedBlockMap;
-    uint8_t blocks[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE] = {}; // 8x8x8 blocks, each block ID is 1 byte (0-255)
+    std::unordered_map<uint64_t, BlockData> modifiedBlockMap;
+    BlockData blocks[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE] = {}; // 8x8x8 blocks, each block ID is 1 byte (0-255)
 };
 
 inline uint64_t hashChunkCoords(int x, int y, int z) {
@@ -23,7 +23,7 @@ inline uint64_t hashChunkCoords(int x, int y, int z) {
 }
 
 inline uint8_t getBlockID(const Chunk& chunk, int x, int y, int z) {
-    return chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE]; // x + y*chunkSize + z*chunkSize*chunkSize; (0-7 coords)
+    return chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE].id; // x + y*chunkSize + z*chunkSize*chunkSize; (0-7 coords)
 }
 
 inline int getLocalCoord(int worldCoord) {
@@ -33,14 +33,21 @@ inline int getLocalCoord(int worldCoord) {
 }
 
 inline void setBlockID(Chunk& chunk, int x, int y, int z, uint8_t id) {
-    chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = id;
+    chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE].id = id;
 }
 
 inline void changeBlockID(Chunk& chunk, int x, int y, int z, uint8_t id) {
-    chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = id;
+    chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE].id = id;
 
     uint64_t key = hashChunkCoords(x, y, z);
-    chunk.modifiedBlockMap[key] = id;
+    chunk.modifiedBlockMap[key].id = id;
+}
+
+inline void changeBlockRotation(Chunk& chunk, int x, int y, int z, uint8_t rotation) {
+    chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE].rotation= rotation;
+
+    uint64_t key = hashChunkCoords(x, y, z);
+    chunk.modifiedBlockMap[key].rotation= rotation;
 }
 
 inline void decodeChunkHash(uint64_t hash, int &x, int &y, int &z) {
@@ -60,9 +67,9 @@ inline int getChunkHashFromWorldCoords(int x, int y, int z) {
 }
 
 
-inline void writeChunkToFile(const Chunk& chunk, int seed){
-    if(chunk.modifiedBlockMap.empty()) return;
-    
+inline void writeChunkToFile(const Chunk& chunk, int seed) {
+    if (chunk.modifiedBlockMap.empty()) return;
+
     std::string CHUNK_FOLDER = "worlds/" + std::to_string(seed);
 
     try {
@@ -75,10 +82,9 @@ inline void writeChunkToFile(const Chunk& chunk, int seed){
         return;
     }
 
-    std::string filename = std::to_string(hashChunkCoords(chunk.position.x / CHUNK_SIZE, chunk.position.y / CHUNK_SIZE, chunk.position.z / CHUNK_SIZE)) + ".chunk";
-    std::cout << "Saving chunk to file: " << filename << std::endl;
+    std::string filename = std::to_string(chunk.position.x / CHUNK_SIZE) + "_" + std::to_string(chunk.position.y / CHUNK_SIZE) + "_" + std::to_string(chunk.position.z / CHUNK_SIZE) + ".chunk";
+    
     std::ofstream outputFile(CHUNK_FOLDER + "/" + filename, std::ios::out | std::ios::binary);
-
     if (!outputFile.is_open()) {
         std::cerr << "Error: Could not open file for writing." << std::endl;
         return;
@@ -88,47 +94,72 @@ inline void writeChunkToFile(const Chunk& chunk, int seed){
     outputFile.write(reinterpret_cast<const char*>(&numBlocks), sizeof(numBlocks));
 
     for (const auto& pair : chunk.modifiedBlockMap) {
-        // Write the uint64_t key and the uint8_t ID directly
         outputFile.write(reinterpret_cast<const char*>(&pair.first), sizeof(pair.first));
-        outputFile.write(reinterpret_cast<const char*>(&pair.second), sizeof(pair.second));
+        outputFile.write(reinterpret_cast<const char*>(&pair.second.id), sizeof(pair.second.id));
+        outputFile.write(reinterpret_cast<const char*>(&pair.second.rotation), sizeof(pair.second.rotation));
     }
-    
+
     outputFile.close();
     std::cout << "Saved " << numBlocks << " modified blocks." << std::endl;
 }
 
-inline void readChunkFromFile(Chunk& chunk, int seed) {
-    uint64_t hash = hashChunkCoords(chunk.position.x / CHUNK_SIZE, chunk.position.y / CHUNK_SIZE, chunk.position.z / CHUNK_SIZE);
-
+inline bool readChunkFromFile(Chunk& chunk, int seed) {
     std::string CHUNK_FOLDER = "worlds/" + std::to_string(seed);
-    std::string filename = std::to_string(hash) + ".chunk";
+    std::string filename = std::to_string(chunk.position.x / CHUNK_SIZE) + "_" + std::to_string(chunk.position.y / CHUNK_SIZE) + "_" + std::to_string(chunk.position.z / CHUNK_SIZE) + ".chunk";
     std::string fullPath = CHUNK_FOLDER + "/" + filename;
 
     std::ifstream inputFile(fullPath, std::ios::in | std::ios::binary);
+    if (!inputFile.is_open()) return false;
 
-    if (!inputFile.is_open()) {
-        return;
+    try {
+        size_t numBlocks = 0;
+        inputFile.read(reinterpret_cast<char*>(&numBlocks), sizeof(numBlocks));
+
+        // Quick sanity check
+        if (numBlocks > CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) {
+            std::cerr << "Chunk file is corrupted (too many blocks): " << fullPath << std::endl;
+            return false;
+        }
+
+        for (size_t i = 0; i < numBlocks; ++i) {
+            uint64_t key = 0;
+            BlockData data{};
+            
+            // Check that reading does not fail
+            if (!inputFile.read(reinterpret_cast<char*>(&key), sizeof(key)) ||
+                !inputFile.read(reinterpret_cast<char*>(&data.id), sizeof(data.id)) ||
+                !inputFile.read(reinterpret_cast<char*>(&data.rotation), sizeof(data.rotation))) 
+            {
+                std::cerr << "Chunk file read error or corrupted: " << fullPath << std::endl;
+                return false;
+            }
+
+            // Basic validation
+            if (data.id > 255) {
+                std::cerr << "Invalid block data in file: " << fullPath << std::endl;
+                continue; // skip corrupted block
+            }
+
+            chunk.modifiedBlockMap[key] = data;
+
+            int x, y, z;
+            decodeChunkHash(key, x, y, z);
+
+            // Validate coordinates inside chunk bounds
+            if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE) {
+                std::cerr << "Block coordinates out of bounds: " << key << std::endl;
+                continue;
+            }
+
+            chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = data;
+        }
+
+        inputFile.close();
+        std::cout << "Successfully read " << chunk.modifiedBlockMap.size() << " modified blocks from " << fullPath << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Exception reading chunk file " << fullPath << ": " << e.what() << std::endl;
+        return false;
     }
-
-    // 1. Read the number of blocks
-    size_t numBlocks;
-    inputFile.read(reinterpret_cast<char*>(&numBlocks), sizeof(numBlocks));
-
-    // 2. Loop and read each block's key and ID
-    for (size_t i = 0; i < numBlocks; ++i) {
-        uint64_t key;
-        uint8_t id;
-        inputFile.read(reinterpret_cast<char*>(&key), sizeof(key));
-        inputFile.read(reinterpret_cast<char*>(&id), sizeof(id));
-        
-        chunk.modifiedBlockMap[key] = id;
-        
-        int x, y, z;
-        decodeChunkHash(key, x, y, z);
-
-        chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = id;
-    }
-    
-    inputFile.close();
-    std::cout << "Successfully read " << numBlocks << " modified blocks from " << fullPath << std::endl;
 }

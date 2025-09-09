@@ -24,6 +24,8 @@ RenderSystem::RenderSystem(unsigned int shaders[], GLFWwindow* window, World* w,
     this->shaderText = shaders[2];
     this->shader3D_hud = shaders[3];
 
+    logicSystem->renderSystem = this;
+
     blocksTextureID = textureManager.loadTexture("textures/blocks.png", TextureWrap::CLAMP_TO_EDGE, TextureWrap::CLAMP_TO_EDGE, TextureFilter::NEAREST, TextureFilter::NEAREST);
     hoverTextureID = textureManager.loadTexture("textures/hover.png", TextureWrap::CLAMP_TO_EDGE, TextureWrap::CLAMP_TO_EDGE, TextureFilter::NEAREST, TextureFilter::NEAREST);
     slotTextureID = textureManager.loadTexture("textures/slot.png", TextureWrap::CLAMP_TO_EDGE, TextureWrap::CLAMP_TO_EDGE, TextureFilter::NEAREST, TextureFilter::NEAREST);
@@ -48,7 +50,7 @@ RenderSystem::RenderSystem(unsigned int shaders[], GLFWwindow* window, World* w,
                 cameraPos = this->cameraPosForThread; // updated in update()
             }
             generate_world(cameraPos);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            processChunkGeneration(); 
         }
     });
 
@@ -75,7 +77,7 @@ void RenderSystem::update(std::unordered_map<unsigned int, TransformComponent> &
         wireframeClicked = false;
     }
     
-    logicSystem->updatePlayerSlotKeys(this);
+    logicSystem->updatePlayerSlotKeys();
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -142,21 +144,42 @@ void RenderSystem::update(std::unordered_map<unsigned int, TransformComponent> &
     std::string coordinates = "X: " + std::to_string((int)transformComponents[App::cameraID].position.x) + 
                               " Y: " + std::to_string((int)transformComponents[App::cameraID].position.y) + 
                               " Z: " + std::to_string((int)transformComponents[App::cameraID].position.z);
-    drawText(coordinates, 5.0f, 0.0f, 1.0f, glm::vec3(1.0f, 1.0f, 1.0f));
-    drawText(std::to_string(App::fps), 5.0f, fontHeight, 1.0f, glm::vec3(1.0f, 1.0f, 1.0f));
+    drawText(coordinates, 5.0f, 0.0f, 1.0f, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    drawText(std::to_string(App::fps), 5.0f, fontHeight, 1.0f, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
     
     drawHandItem(transformComponents);
     drawHotbar();
     drawCursor();
 
+    {
+        float elapsed = glfwGetTime() - itemNameTextShowTime;
+        if(elapsed < 1.5f){
+            int slotSpacing = width/36; // width/4/9
+            double scale = getScaleForHeight(slotSpacing/2);
+            double textWidth = getTextWidth(itemNameText, scale);
+            double textHeight = getTextHeight(scale);
+            
+            float alpha = 0.0f;
+
+            if (elapsed > 1.25f) {
+                // Fade out (1 → 0)
+                alpha = (1.5f - elapsed) / 0.25f;
+            } else {
+                // Fully visible
+                alpha = 1.0f;
+            }
+            
+            drawText(itemNameText, width/2 - textWidth/2, height - (slotSpacing * 1.5) - (textHeight*1.5), scale, glm::vec4(1.0f, 1.0f, 1.0f, alpha));
+        }
+    }
+
 	glfwSwapBuffers(window);
 }
 
 void RenderSystem::processMeshQueue() {
-    // Process new meshes to be created (OpenGL calls on main thread)
     std::lock_guard<std::mutex> meshLock(meshQueueMutex);
     for (auto& [hash, meshData] : meshQueue) {
-        Mesh mesh = meshSystem.createMesh(meshData); // OpenGL call on main thread
+        Mesh mesh = meshSystem.createMesh(meshData);
 
         int x, y, z;
         decodeChunkHash(hash, x, y, z);
@@ -165,7 +188,6 @@ void RenderSystem::processMeshQueue() {
         z *= CHUNK_SIZE;
 
         mesh.startPositonOfChunk = {x, y, z};
-
         chunksMesh[hash] = std::move(mesh);
     }
     meshQueue.clear();
@@ -176,9 +198,59 @@ void RenderSystem::processMeshQueue() {
         if (it != chunksMesh.end()) {
             meshSystem.deleteMesh(it->second);
             chunksMesh.erase(it);
+            {
+                std::unique_lock lock(world->loadedChunksMutex);
+                world->loadedChunks.erase(hash);
+            }
         }
     }
     chunksToDeleteQueue.clear();
+}
+
+void RenderSystem::processChunkGeneration() {
+    uint64_t hash_to_process = 0;
+    bool job_found = false;
+
+    // --- Find a chunk to generate ---
+    {
+        std::lock_guard<std::mutex> lock(cameraMutex);
+        if (!chunksToGenerate.empty()) {
+            hash_to_process = chunksToGenerate.back();
+            chunksToGenerate.pop_back();
+            job_found = true;
+        }
+    }
+
+    if (!job_found) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // no work
+        return;
+    }
+
+    // --- Process the chunk ---
+    int cx, cy, cz;
+    decodeChunkHash(hash_to_process, cx, cy, cz);
+
+    auto chunk = std::make_shared<Chunk>();
+    chunk->position = {
+        static_cast<float>(cx * CHUNK_SIZE),
+        static_cast<float>(cy * CHUNK_SIZE),
+        static_cast<float>(cz * CHUNK_SIZE)
+    };
+
+    world->generateChunk(*chunk); 
+
+    {
+        std::unique_lock lock(world->loadedChunksMutex);
+        world->loadedChunks.insert(hash_to_process);
+    }
+    {
+        std::unique_lock lock(world->chunkMapMutex);
+        world->chunkMap.emplace(hash_to_process, chunk);
+    }
+    {
+        std::scoped_lock lock(meshCreationQueueMutex);
+        meshCreationQueue.emplace(hash_to_process, chunk);
+    }
 }
 
 void RenderSystem::generate_world(const glm::vec3& playerPos) {
@@ -188,7 +260,7 @@ void RenderSystem::generate_world(const glm::vec3& playerPos) {
     int playerChunkY = static_cast<int>(floor(playerPos.y / CHUNK_SIZE));
     int playerChunkZ = static_cast<int>(floor(playerPos.z / CHUNK_SIZE));
 
-    // Only update chunks if the player has moved to a new chunk
+    // only update chunks if the player has moved to a new chunk
     if (playerChunkX == lastPlayerChunkX && playerChunkY == lastPlayerChunkY && playerChunkZ == lastPlayerChunkZ) {
         return;
     }
@@ -200,13 +272,13 @@ void RenderSystem::generate_world(const glm::vec3& playerPos) {
     int render_dist_h = RENDER_DISTANCE / 2;
     int render_dist_v = VERTICAL_RENDER_DISTANCE / 2;
 
-    // Load a 1-chunk border around the render distance for seamless meshing
     const int load_dist_h = render_dist_h + 1;
     const int load_dist_v = render_dist_v + 1;
 
+    std::vector<uint64_t> new_chunks_to_generate;
     // --- 1. Unload distant chunks ---
     {
-        std::lock_guard<std::mutex> lock(chunkMapMutex);
+        std::unique_lock lock(world->chunkMapMutex);
         for (auto it = chunkMap.begin(); it != chunkMap.end(); ) {
             int cx, cy, cz;
             decodeChunkHash(it->first, cx, cy, cz);
@@ -217,7 +289,7 @@ void RenderSystem::generate_world(const glm::vec3& playerPos) {
                     chunksToDeleteQueue.push_back(it->first);
                 }
 
-                writeChunkToFile(it->second, world->seed);
+                writeChunkToFile(*(it->second), world->seed);
                 it = chunkMap.erase(it);
             } else {
                 ++it;
@@ -225,76 +297,45 @@ void RenderSystem::generate_world(const glm::vec3& playerPos) {
         }
     }
 
-    // --- 2. Load new chunk data ---
-    for (int cz = playerChunkZ - load_dist_h; cz <= playerChunkZ + load_dist_h; ++cz) {
-        for (int cx = playerChunkX - load_dist_h; cx <= playerChunkX + load_dist_h; ++cx) {
-            for (int cy = playerChunkY + load_dist_v - 1; cy >= playerChunkY - load_dist_v; --cy) {
+    // --- 2. Discover new chunks to load ---
+    for (int dx = -load_dist_h; dx <= load_dist_h; ++dx) {
+        for (int dz = -load_dist_h; dz <= load_dist_h; ++dz) {
+            for (int dy = -load_dist_v; dy <= load_dist_v; ++dy) {
+                int cx = playerChunkX + dx;
+                int cy = playerChunkY + dy;
+                int cz = playerChunkZ + dz;
                 uint64_t hash = hashChunkCoords(cx, cy, cz);
-                
-                
+
                 bool chunk_exists;
                 {
-                    std::lock_guard<std::mutex> lock(chunkMapMutex);
-                    chunk_exists = (chunkMap.find(hash) != chunkMap.end());
+                    std::shared_lock lock(world->chunkMapMutex);
+                    chunk_exists = (chunkMap.count(hash) > 0);
                 }
 
                 if (!chunk_exists) {
-                    Chunk chunk;
-                    chunk.position = { static_cast<float>(cx * CHUNK_SIZE),
-                                       static_cast<float>(cy * CHUNK_SIZE),
-                                       static_cast<float>(cz * CHUNK_SIZE) };
-
-                    // Heavy chunk creating
-                    world->generateChunk(chunk);
-
-                    {
-                        std::lock_guard<std::mutex> lock(chunkMapMutex);
-                        chunkMap.emplace(hash, std::move(chunk));
-                    }
-
-                    if(cz >= playerChunkZ - render_dist_h && cz <= playerChunkZ + render_dist_h && cy >= playerChunkY - render_dist_v && cy <= playerChunkY + render_dist_v && cx >= playerChunkX - render_dist_h && cx <= playerChunkX + render_dist_h){
-                        // Lock both mutexes at once to prevent deadlock
-                        std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
-                        meshCreationQueue.emplace(hash, chunkMap.at(hash));
-                    }else{
-                        dirtyChunksQueue.insert(hash);
-                    }
-                }else{
-                    if(cz >= playerChunkZ - render_dist_h && cz <= playerChunkZ + render_dist_h && cy >= playerChunkY - render_dist_v && cy <= playerChunkY + render_dist_v && cx >= playerChunkX - render_dist_h && cx <= playerChunkX + render_dist_h){
-                        if(dirtyChunksQueue.count(hash) == 1){
-                           // Lock both mutexes at once to prevent deadlock
-                           std::scoped_lock lock(chunkMapMutex, meshCreationQueueMutex);
-                           meshCreationQueue.emplace(hash, chunkMap.at(hash));
-                           dirtyChunksQueue.erase(hash);
-                        }
-                    }
+                    new_chunks_to_generate.push_back(hash);
                 }
             }
         }
     }
-}
 
+    // --- 3. Prioritize and queue the new chunks ---
+    if (!new_chunks_to_generate.empty()) {
+        std::sort(new_chunks_to_generate.begin(), new_chunks_to_generate.end(),
+            [&](uint64_t a, uint64_t b) {
+                int ax, ay, az, bx, by, bz;
+                decodeChunkHash(a, ax, ay, az);
+                decodeChunkHash(b, bx, by, bz);
+                // Sort by distance from player
+                return (abs(ax - playerChunkX) + abs(az - playerChunkZ) + abs(ay - playerChunkY)) >
+                       (abs(bx - playerChunkX) + abs(bz - playerChunkZ) + abs(by - playerChunkY));
+            });
 
-void RenderSystem::generate_world_meshes() {
-    std::lock_guard<std::mutex> lock(meshCreationQueueMutex);
-    for (auto it = meshCreationQueue.begin(); it != meshCreationQueue.end(); ) {
-        uint64_t hash = it->first;
-
-        {
-            std::lock_guard<std::mutex> chunkLock(chunkMapMutex);
-            if (neighborsReady(hash, world->chunkMap)) {
-                double lastTime = glfwGetTime();
-                MeshData meshData = meshSystem.createChunkData(meshCreationQueue.at(hash), world->chunkMap);
-                std::lock_guard<std::mutex> meshLock(meshQueueMutex);
-                meshQueue.push_back({hash, meshData});
-
-                it = meshCreationQueue.erase(it);
-            }else{
-                it++;
-            }
-        }
+        std::lock_guard<std::mutex> lock(cameraMutex);
+        chunksToGenerate.insert(chunksToGenerate.end(), new_chunks_to_generate.begin(), new_chunks_to_generate.end());
     }
 }
+
 
 const int neighborOffsets[6][3] = {
     {1, 0, 0}, {-1, 0, 0},
@@ -302,30 +343,90 @@ const int neighborOffsets[6][3] = {
     {0, 0, 1}, {0, 0, -1}
 };
 
-bool RenderSystem::neighborsReady(uint64_t hash, const std::unordered_map<uint64_t, Chunk>& chunkMap) {
+void RenderSystem::generate_world_meshes() {
+    std::vector<std::pair<uint64_t, std::shared_ptr<Chunk>>> ready_to_mesh;
+
+    {
+        std::shared_lock lock(meshCreationQueueMutex);
+        if (meshCreationQueue.empty()) {
+            return;
+        }
+
+        ready_to_mesh.reserve(meshCreationQueue.size());
+        for (const auto& pair : meshCreationQueue) {
+            bool is_ready;
+            {
+                std::shared_lock loaded_lock(world->loadedChunksMutex);
+                is_ready = neighborsReady(pair.first, world->loadedChunks);
+            }
+            if (is_ready) {
+                ready_to_mesh.push_back(pair);
+            }
+        }
+    }
+
+    if (ready_to_mesh.empty()) {
+        return;
+    }
+
+    for (const auto& pair : ready_to_mesh) {
+        const auto& hash = pair.first;
+        const auto& chunkToMesh = pair.second;
+
+        // Gather neighbor data under a single lock to avoid repeated locking inside createChunkData.
+        std::array<std::shared_ptr<Chunk>, 6> neighbors;
+        {
+            std::shared_lock chunkLock(world->chunkMapMutex);
+            int cx, cy, cz;
+            decodeChunkHash(hash, cx, cy, cz);
+            for (int i = 0; i < 6; ++i) {
+                uint64_t nHash = hashChunkCoords(cx + neighborOffsets[i][0], cy + neighborOffsets[i][1], cz + neighborOffsets[i][2]);
+                auto it = world->chunkMap.find(nHash);
+                neighbors[i] = (it != world->chunkMap.end()) ? it->second : nullptr;
+            }
+        }
+
+        MeshData meshData = meshSystem.createChunkData(*chunkToMesh, neighbors);
+        
+        std::lock_guard<std::mutex> meshLock(meshQueueMutex);
+        meshQueue.push_back({hash, meshData});
+    }
+
+    {
+        std::unique_lock lock(meshCreationQueueMutex);
+        for (const auto& pair : ready_to_mesh) {
+            meshCreationQueue.erase(pair.first);
+        }
+    }
+}
+
+bool RenderSystem::neighborsReady(uint64_t hash, const std::unordered_set<uint64_t>& loadedChunks) {
     int cx, cy, cz;
     decodeChunkHash(hash, cx, cy, cz);
 
     for (auto& offset : neighborOffsets) {
         uint64_t nHash = hashChunkCoords(cx + offset[0], cy + offset[1], cz + offset[2]);
-        if (!chunkMap.count(nHash)) return false;
+        if (!loadedChunks.count(nHash)) return false;
     }
     return true;
 }
 
 
-void RenderSystem::drawText(const std::string& text, float x, float y, float scale, const glm::vec3& color) 
+void RenderSystem::drawText(const std::string& text, float x, float y, float scale, const glm::vec4& color) 
 {
-     // --- State setup for 2D rendering ---
-    glDisable(GL_CULL_FACE); // Disable culling for 2D text quads
+     // --- Setup for 2D rendering ---
+    glDisable(GL_CULL_FACE); 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_DEPTH_TEST); // UI should always be drawn on top
+    glDisable(GL_DEPTH_TEST); // UI drawn on top
+
+    y /= scale;
+    x /= scale;
 
     glUseProgram(shaderText);
 
     // Set text color
-    glUniform3f(glGetUniformLocation(shaderText, "textColor"), color.r, color.g, color.b);
+    glUniform4f(glGetUniformLocation(shaderText, "textColor"), color.r, color.g, color.b, color.a);
 
     // Bind font texture
     glActiveTexture(GL_TEXTURE0);
@@ -390,8 +491,8 @@ void RenderSystem::renderHoverBlock(glm::vec3 playerPos, glm::vec3 cameraDir, fl
         int y = hit.block.position.y;
         int z = hit.block.position.z;
 
-        float offset = 0.001f;
-        uint8_t layer = 255; // 4 - full light on block
+        float offset = 0.005f;
+        uint8_t layer = 255; // 255 - full light on block
 
         Vertex vertices[] = {
             // Front (+Z)
@@ -463,24 +564,29 @@ void RenderSystem::renderHoverBlock(glm::vec3 playerPos, glm::vec3 cameraDir, fl
         data.indices.assign(indices, indices + sizeof(indices)/sizeof(unsigned int));
 
         Mesh hoverMesh = meshSystem.createMesh(data);
+        if(hit.distance == 0){ // inside block
+            glDisable(GL_CULL_FACE); 
+        }
+
         glEnable(GL_BLEND);
         glBindVertexArray(hoverMesh.VAO);
         glBindTexture(GL_TEXTURE_2D, hoverTextureID);
         glDrawElements(GL_TRIANGLES, hoverMesh.indexCount, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
         glDisable(GL_BLEND);
+        glEnable(GL_CULL_FACE);
         meshSystem.deleteMesh(hoverMesh);
 
-        // breaking and placing blocks
-        logicSystem->handlePlayerMouseClick(hit, chunkMapMutex, meshCreationQueueMutex, meshSystem, chunksMesh);
+        // breaking and placing blocks & middle clicking
+        logicSystem->handlePlayerMouseClick(hit, world->chunkMapMutex, meshCreationQueueMutex, meshSystem, chunksMesh);
     }
 }
 
 void RenderSystem::drawCursor() {
-    glDisable(GL_CULL_FACE); // Disable culling for 2D text quads
+    glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_DEPTH_TEST); // UI should always be drawn on top
+    glDisable(GL_DEPTH_TEST);
 
     glUseProgram(shader2D);
 
@@ -507,7 +613,7 @@ void RenderSystem::drawCursor() {
 }
 
 void RenderSystem::drawHandItem(std::unordered_map<unsigned int, TransformComponent>& transformComponents) {
-    if(logicSystem->player->inventory.getSelectedItem() == 0) return;
+    if(logicSystem->player->inventory.getSelectedItem().id == 0) return;
 
     glClear(GL_DEPTH_BUFFER_BIT);
 
@@ -529,7 +635,7 @@ void RenderSystem::drawHandItem(std::unordered_map<unsigned int, TransformCompon
     glm::mat4 handItemView = glm::mat4(glm::mat3(mainView));
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "view"), 1, GL_FALSE, glm::value_ptr(handItemView));
 
-    int itemID = logicSystem->player->inventory.getSelectedItem();
+    int itemID = logicSystem->player->inventory.getSelectedItem().id;
     float uSize = meshSystem.blockTexSize / static_cast<float>(meshSystem.atlasWidthPixels);
     float vSize = meshSystem.blockTexSize / static_cast<float>(meshSystem.atlasHeightPixels);
     glUniform2f(glGetUniformLocation(shader3D_hud, "tileSize"), uSize, vSize);
@@ -552,14 +658,13 @@ void RenderSystem::drawHandItem(std::unordered_map<unsigned int, TransformCompon
     glDrawElements(GL_TRIANGLES, handItemMesh.indexCount, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
 
-    // 4. Switch back to the main world shader for subsequent rendering.
     glUseProgram(shader);
 }
 
 RenderSystem::~RenderSystem() {
-    runningCreationThread = false; // Signal the worker thread to stop
+    runningCreationThread = false;
     if (dataCreationThread.joinable()) {
-        dataCreationThread.join(); // Wait for the worker thread to finish
+        dataCreationThread.join();
     }
     if (meshCreationThread.joinable()) {
         meshCreationThread.join();
@@ -571,16 +676,13 @@ RenderSystem::~RenderSystem() {
     }
     chunksMesh.clear();
 
-    // Clean up other meshes
     if (handItemMesh.VAO != 0) {
         meshSystem.deleteMesh(handItemMesh);
     }
 
-    // Clean up textures
     textureManager.deleteTextures();
     glDeleteTextures(1, &fontTexture);
 
-    // Clean up UI buffers
     glDeleteVertexArrays(1, &cursorVAO);
     glDeleteBuffers(1, &cursorVBO);
     glDeleteVertexArrays(1, &textVAO);
@@ -593,9 +695,9 @@ void RenderSystem::saveWorld(){
     {
         auto& chunkMap = world->chunkMap;
 
-        std::lock_guard<std::mutex> lock(chunkMapMutex);
+        std::shared_lock chunkLock(world->chunkMapMutex);
         for (auto& [hash, chunk] : chunkMap) {
-            writeChunkToFile(chunk, world->seed);
+            writeChunkToFile(*chunk, world->seed);
         }
     }
 }
@@ -605,7 +707,6 @@ void RenderSystem::generate3DCubeMesh() {
         meshSystem.deleteMesh(handItemMesh);
     }
 
-    // Light levels
     uint8_t sideLight   = 200;
     uint8_t bottomLight = 150;
     uint8_t topLight    = 255;
@@ -658,10 +759,10 @@ void RenderSystem::generate3DCubeMesh() {
 
 
 void RenderSystem::drawHotbar() {
-    glDisable(GL_CULL_FACE); // Disable culling for 2D text quads
+    glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_DEPTH_TEST); // UI should always be drawn on top
+    glDisable(GL_DEPTH_TEST); 
 
     glUseProgram(shader2D);
 
@@ -684,21 +785,18 @@ void RenderSystem::drawHotbar() {
         glBindTexture(GL_TEXTURE_2D, (logicSystem->player->inventory.selectedSlot == i)?slotSelectedTextureID:slotTextureID);
         glUniform1i(glGetUniformLocation(shader2D, "texture0"), 0);
 
-        // 4. Bind the quad's VAO
         glBindVertexArray(slotVAO);
 
-        // 5. Draw the quad
-        glDrawArrays(GL_TRIANGLES, 0, 6); // Assuming 6 vertices for a two-triangle quad
+        glDrawArrays(GL_TRIANGLES, 0, 6); 
 
-        // 6. Unbind the VAO for good practice
         glBindVertexArray(0);
 
-        int id = logicSystem->player->inventory.items[i];
+        int id = logicSystem->player->inventory.items[i].id;
         if(id != 0){
             drawItem(slotX, slotSpacing, slotSpacing/2, id);
         }
 
-        glDisable(GL_CULL_FACE); // Disable culling for 2D text quads
+        glDisable(GL_CULL_FACE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_DEPTH_TEST);
@@ -713,14 +811,13 @@ void RenderSystem::drawHotbar() {
 }
 
 void RenderSystem::drawItem(float slotCenterX, float slotCenterY, float slotSize, int itemID) {
-    // Save current viewport
     GLint prevViewport[4];
     glGetIntegerv(GL_VIEWPORT, prevViewport);
 
-    // Render the item in a larger viewport for better resolution, e.g., 4x the slot size.
+    // render the item in a larger viewport for better resolution
     float renderSize = slotSize * 4.0f;
 
-    // Calculate the bottom-left corner for the larger viewport, centered on the slot.
+    // bottom-left corner for the larger viewport, centered on the slot.
     int viewportX = static_cast<int>(slotCenterX - renderSize / 2.0f);
     int viewportY = static_cast<int>(slotCenterY - renderSize / 2.0f);
 
@@ -733,7 +830,6 @@ void RenderSystem::drawItem(float slotCenterX, float slotCenterY, float slotSize
 
     glUseProgram(shader3D_hud);
 
-    // --- View & Model (same as before) ---
     glm::mat4 view = glm::lookAt(glm::vec3(0, 0, 3), glm::vec3(0,0,0), glm::vec3(0,1,0));
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::rotate(model, glm::radians(30.0f), glm::vec3(1,0,0));
@@ -741,7 +837,6 @@ void RenderSystem::drawItem(float slotCenterX, float slotCenterY, float slotSize
 
     glm::mat4 proj = glm::ortho(-2.0f, 2.0f, -2.0f, 2.0f, 0.1f, 100.0f);
 
-    // Upload uniforms
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "projection"), 1, GL_FALSE, glm::value_ptr(proj));
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "view"), 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(shader3D_hud, "model"), 1, GL_FALSE, glm::value_ptr(model));
@@ -753,13 +848,13 @@ void RenderSystem::drawItem(float slotCenterX, float slotCenterY, float slotSize
     float yOffset = (itemID - 1) * vSize;
     glUniform2f(glGetUniformLocation(shader3D_hud, "tileOffset"), 0.0f, yOffset);
 
-    // Draw block/item mesh here
+    // draw item mesh
     glBindTexture(GL_TEXTURE_2D, blocksTextureID);
     glBindVertexArray(handItemMesh.VAO);
     glDrawElements(GL_TRIANGLES, handItemMesh.indexCount, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
 
-    // Restore viewport
+    // restore viewport
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
 
     glEnable(GL_BLEND);
@@ -776,7 +871,6 @@ void RenderSystem::setUpBuffers(){
             0,  5
         };
 
-        // Set up VAO/VBO once
         glGenVertexArrays(1, &cursorVAO);
         glGenBuffers(1, &cursorVBO);
         glBindVertexArray(cursorVAO);
@@ -850,16 +944,45 @@ void RenderSystem::setUpBuffers(){
         glBindBuffer(GL_ARRAY_BUFFER, slotVBO); // Bind the VBO
         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW); // Populate VBO with vertex data
 
-        // Configure vertex position attribute (layout = 0)
+        // vertex position attribute (layout = 0)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
 
-        // Configure texture coordinate attribute (layout = 1)
+        // texture coordinate attribute (layout = 1)
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
         glEnableVertexAttribArray(1);
 
-        // Unbind the VBO and VAO for a clean state
+        // Unbind the VBO and VAO
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
     }
+}
+
+void RenderSystem::drawHotbarText(std::string text){
+    itemNameTextShowTime = glfwGetTime();
+    itemNameText = text;
+}
+
+float RenderSystem::getTextWidth(const std::string& text, float scale){
+    float x = 0.0f;
+    float y = 0.0f;
+
+    for (const char* p = text.c_str(); *p; p++)
+    {
+        if (*p >= 32 && *p < 128)
+        {
+            stbtt_aligned_quad q;
+            stbtt_GetBakedQuad(cdata, 512, 512, *p - 32, &x, &y, &q, 1);
+        }
+    }
+
+    return x * scale;
+}
+
+float RenderSystem::getScaleForHeight(float desiredHeight){
+    return desiredHeight / fontHeight;
+}
+
+float RenderSystem::getTextHeight(float scale){
+    return fontHeight * scale;
 }
