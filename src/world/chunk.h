@@ -38,9 +38,11 @@ inline void setBlockID(Chunk& chunk, int x, int y, int z, uint8_t id) {
 
 inline void changeBlockID(Chunk& chunk, int x, int y, int z, uint8_t id) {
     chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE].id = id;
+    chunk.blocks[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE].rotation = 0;
 
     uint64_t key = hashChunkCoords(x, y, z);
     chunk.modifiedBlockMap[key].id = id;
+    chunk.modifiedBlockMap[key].rotation = 0;
 }
 
 inline void changeBlockRotation(Chunk& chunk, int x, int y, int z, uint8_t rotation) {

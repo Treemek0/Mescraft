@@ -207,6 +207,7 @@ void RenderSystem::processMeshQueue() {
     chunksToDeleteQueue.clear();
 }
 
+// creates one chunk per function which allows for unloading and loading chunks faster instead of waiting for all old chunks to load to start loading new ones when moving
 void RenderSystem::processChunkGeneration() {
     uint64_t hash_to_process = 0;
     bool job_found = false;
@@ -352,6 +353,7 @@ void RenderSystem::generate_world_meshes() {
             return;
         }
 
+        // faster locking
         ready_to_mesh.reserve(meshCreationQueue.size());
         for (const auto& pair : meshCreationQueue) {
             bool is_ready;
@@ -373,7 +375,7 @@ void RenderSystem::generate_world_meshes() {
         const auto& hash = pair.first;
         const auto& chunkToMesh = pair.second;
 
-        // Gather neighbor data under a single lock to avoid repeated locking inside createChunkData.
+        // neigbour data - locking for less time and also doesnt double lock inside chunkData creation
         std::array<std::shared_ptr<Chunk>, 6> neighbors;
         {
             std::shared_lock chunkLock(world->chunkMapMutex);

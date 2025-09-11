@@ -37,8 +37,7 @@ public:
 
     Mesh createMesh(MeshData& meshData);
     void deleteMesh(const Mesh& mesh);
-    MeshData createChunkData(const Chunk& chunk, const std::array<std::shared_ptr<Chunk>, 6>& neighbors);
-    MeshData createChunkData(const Chunk& chunk, const std::unordered_map<uint64_t, std::shared_ptr<Chunk>>& chunkMap);
+    MeshData createChunkData(const Chunk& chunk, const std::array<std::shared_ptr<Chunk>, 6>& neighbors, int LOD = 1);
     void updateMeshDataWithBlock(Mesh& mesh, const Chunk& chunk, const std::unordered_map<uint64_t, std::shared_ptr<Chunk>>& chunkMap, int x, int y, int z);
     void updateChunkMesh(Mesh& chunkMesh);
 

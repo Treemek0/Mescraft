@@ -70,7 +70,32 @@ void LogicSystem::updatePlayerSlotKeys(){
     }
 }
 
+const int neighborOffsets[6][3] = {
+            {1, 0, 0}, {-1, 0, 0},
+            {0, 1, 0}, {0, -1, 0},
+            {0, 0, 1}, {0, 0, -1}
+        };
+
 void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chunkMapMutex, std::shared_mutex& meshCreationQueueMutex, MeshSystem& meshSystem, std::unordered_map<uint64_t, Mesh>& chunksMesh){
+    auto createChunkMesh = [&](Chunk& chunk) -> Mesh {
+        int cx = chunk.position.x / CHUNK_SIZE;
+        int cy = chunk.position.y / CHUNK_SIZE;
+        int cz = chunk.position.z / CHUNK_SIZE;
+       
+        std::array<std::shared_ptr<Chunk>, 6> neighbors;
+        {
+            for (int i = 0; i < 6; ++i) {
+                uint64_t nHash = hashChunkCoords(cx + neighborOffsets[i][0], cy + neighborOffsets[i][1], cz + neighborOffsets[i][2]);
+                auto it = world->chunkMap.find(nHash);
+                neighbors[i] = (it != world->chunkMap.end()) ? it->second : nullptr;
+            }
+        }
+
+        MeshData data = meshSystem.createChunkData(chunk, neighbors);
+        Mesh mesh = meshSystem.createMesh(data);
+        return mesh;
+    };
+    
     try
         {
             int x = hit.block.position.x;
@@ -154,9 +179,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                     changeBlockRotation(chunk, localX, localY, localZ, rotation);
                 }
 
-                auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                Mesh mesh = meshSystem.createMesh(data);
-
+                Mesh mesh = createChunkMesh(chunk);
                 mesh.startPositonOfChunk = {cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE};
 
                 chunksMesh[hash] = mesh;
@@ -182,8 +205,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                 
                 changeBlockID(chunk, localX, localY, localZ, 0);
 
-                auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                Mesh mesh = meshSystem.createMesh(data);
+                Mesh mesh = createChunkMesh(chunk);
 
                 mesh.startPositonOfChunk = {cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE};
 
@@ -193,8 +215,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                     uint64_t hash = hashChunkCoords(cx - 1, cy, cz);
                     Chunk& chunk = *world->chunkMap.at(hash);
 
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    Mesh mesh = meshSystem.createMesh(data);
+                    Mesh mesh = createChunkMesh(chunk);
 
                     mesh.startPositonOfChunk = {(cx - 1) * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE};
 
@@ -203,8 +224,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                     uint64_t hash = hashChunkCoords(cx + 1, cy, cz);
                     Chunk& chunk = *world->chunkMap.at(hash);
 
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    Mesh mesh = meshSystem.createMesh(data);
+                    Mesh mesh = createChunkMesh(chunk);
 
                     mesh.startPositonOfChunk = {(cx + 1) * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE};
 
@@ -215,8 +235,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                     uint64_t hash = hashChunkCoords(cx, cy - 1, cz);
                     Chunk& chunk = *world->chunkMap.at(hash);
 
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    Mesh mesh = meshSystem.createMesh(data);
+                    Mesh mesh = createChunkMesh(chunk);
 
                     mesh.startPositonOfChunk = {cx * CHUNK_SIZE, (cy - 1) * CHUNK_SIZE, cz * CHUNK_SIZE};
 
@@ -225,8 +244,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                     uint64_t hash = hashChunkCoords(cx, cy + 1, cz);
                     Chunk& chunk = *world->chunkMap.at(hash);
 
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    Mesh mesh = meshSystem.createMesh(data);
+                    Mesh mesh = createChunkMesh(chunk);
 
                     mesh.startPositonOfChunk = {cx * CHUNK_SIZE, (cy + 1) * CHUNK_SIZE, cz * CHUNK_SIZE};
 
@@ -237,8 +255,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                     uint64_t hash = hashChunkCoords(cx, cy, cz - 1);
                     Chunk& chunk = *world->chunkMap.at(hash);
 
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    Mesh mesh = meshSystem.createMesh(data);
+                    Mesh mesh = createChunkMesh(chunk);
 
                     mesh.startPositonOfChunk = {cx * CHUNK_SIZE, cy * CHUNK_SIZE, (cz - 1) * CHUNK_SIZE};
 
@@ -247,8 +264,7 @@ void LogicSystem::handlePlayerMouseClick(RaycastHit hit, std::shared_mutex& chun
                     uint64_t hash = hashChunkCoords(cx, cy, cz + 1);
                     Chunk& chunk = *world->chunkMap.at(hash);
 
-                    auto data = meshSystem.createChunkData(chunk, world->chunkMap);
-                    Mesh mesh = meshSystem.createMesh(data);
+                    Mesh mesh = createChunkMesh(chunk);
 
                     mesh.startPositonOfChunk = {cx * CHUNK_SIZE, cy * CHUNK_SIZE, (cz + 1) * CHUNK_SIZE};
                     
